@@ -11,8 +11,6 @@ import dev.one.launcher.data.DownloadRepository
 import dev.one.launcher.data.DownloadState
 import dev.one.launcher.data.MatchedFile
 import dev.one.launcher.data.MatchedFilesStore
-import dev.one.launcher.data.PortCatalog
-import dev.one.launcher.data.PortCatalog
 import dev.one.launcher.data.PortCatalogRepository
 import dev.one.launcher.data.PortMatcher
 import dev.one.launcher.data.PortSettings
@@ -24,6 +22,7 @@ import dev.one.launcher.data.PremiumizeItem
 import dev.one.launcher.data.PremiumizeResult
 import dev.one.launcher.data.SecureKeyStore
 import dev.one.launcher.model.Port
+import dev.one.launcher.model.PortCatalog
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
