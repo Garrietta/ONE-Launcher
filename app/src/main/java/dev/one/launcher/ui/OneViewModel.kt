@@ -54,6 +54,55 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     private val matchedStore = MatchedFilesStore(application)
     private val downloadRepo = DownloadRepository(application)
 
+    // StateFlows must be declared before init: init calls refreshLibrary(),
+    // and Kotlin initializes properties and init blocks in declaration order,
+    // so a flow declared after init is still null when init runs (v1.0.2
+    // launch crash: NPE writing _portStatuses from refreshLibrary).
+    private val _portStatuses = MutableStateFlow<Map<String, PortStatus>>(emptyMap())
+    val portStatuses: StateFlow<Map<String, PortStatus>> = _portStatuses.asStateFlow()
+
+    private val _selectedPortId = MutableStateFlow<String?>(null)
+    val selectedPortId: StateFlow<String?> = _selectedPortId.asStateFlow()
+
+    private val _launchError = MutableStateFlow<String?>(null)
+    val launchError: StateFlow<String?> = _launchError.asStateFlow()
+
+    private val _pmAccount = MutableStateFlow<PremiumizeAccount?>(null)
+    val pmAccount: StateFlow<PremiumizeAccount?> = _pmAccount.asStateFlow()
+
+    private val _pmConnecting = MutableStateFlow(false)
+    val pmConnecting: StateFlow<Boolean> = _pmConnecting.asStateFlow()
+
+    private val _pmError = MutableStateFlow<String?>(null)
+    val pmError: StateFlow<String?> = _pmError.asStateFlow()
+
+    private val _cloudItems = MutableStateFlow<List<PremiumizeItem>>(emptyList())
+    val cloudItems: StateFlow<List<PremiumizeItem>> = _cloudItems.asStateFlow()
+
+    private val _cloudBreadcrumbs = MutableStateFlow<List<PremiumizeBreadcrumb>>(emptyList())
+    val cloudBreadcrumbs: StateFlow<List<PremiumizeBreadcrumb>> = _cloudBreadcrumbs.asStateFlow()
+
+    private val _cloudLoading = MutableStateFlow(false)
+    val cloudLoading: StateFlow<Boolean> = _cloudLoading.asStateFlow()
+
+    private val _cloudError = MutableStateFlow<String?>(null)
+    val cloudError: StateFlow<String?> = _cloudError.asStateFlow()
+
+    private val _searchResults = MutableStateFlow<List<PremiumizeItem>?>(null)
+    val searchResults: StateFlow<List<PremiumizeItem>?> = _searchResults.asStateFlow()
+
+    private val _downloadProgress = MutableStateFlow<Map<String, Float>>(emptyMap())
+    val downloadProgress: StateFlow<Map<String, Float>> = _downloadProgress.asStateFlow()
+
+    private val _downloadError = MutableStateFlow<String?>(null)
+    val downloadError: StateFlow<String?> = _downloadError.asStateFlow()
+
+    /** (folder id, display name), root first. */
+    private val folderStack = mutableListOf<Pair<String?, String>>(null to "My cloud")
+
+    private val _folderTrail = MutableStateFlow<List<String>>(listOf("My cloud"))
+    val folderTrail: StateFlow<List<String>> = _folderTrail.asStateFlow()
+
     val catalogNote: String
     val ports: List<Port>
 
@@ -73,15 +122,6 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ---- Library ----
-
-    private val _portStatuses = MutableStateFlow<Map<String, PortStatus>>(emptyMap())
-    val portStatuses: StateFlow<Map<String, PortStatus>> = _portStatuses.asStateFlow()
-
-    private val _selectedPortId = MutableStateFlow<String?>(null)
-    val selectedPortId: StateFlow<String?> = _selectedPortId.asStateFlow()
-
-    private val _launchError = MutableStateFlow<String?>(null)
-    val launchError: StateFlow<String?> = _launchError.asStateFlow()
 
     fun selectPort(id: String?) {
         _selectedPortId.value = id
@@ -167,42 +207,6 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ---- Premiumize (own cloud only) ----
-
-    private val _pmAccount = MutableStateFlow<PremiumizeAccount?>(null)
-    val pmAccount: StateFlow<PremiumizeAccount?> = _pmAccount.asStateFlow()
-
-    private val _pmConnecting = MutableStateFlow(false)
-    val pmConnecting: StateFlow<Boolean> = _pmConnecting.asStateFlow()
-
-    private val _pmError = MutableStateFlow<String?>(null)
-    val pmError: StateFlow<String?> = _pmError.asStateFlow()
-
-    private val _cloudItems = MutableStateFlow<List<PremiumizeItem>>(emptyList())
-    val cloudItems: StateFlow<List<PremiumizeItem>> = _cloudItems.asStateFlow()
-
-    private val _cloudBreadcrumbs = MutableStateFlow<List<PremiumizeBreadcrumb>>(emptyList())
-    val cloudBreadcrumbs: StateFlow<List<PremiumizeBreadcrumb>> = _cloudBreadcrumbs.asStateFlow()
-
-    private val _cloudLoading = MutableStateFlow(false)
-    val cloudLoading: StateFlow<Boolean> = _cloudLoading.asStateFlow()
-
-    private val _cloudError = MutableStateFlow<String?>(null)
-    val cloudError: StateFlow<String?> = _cloudError.asStateFlow()
-
-    private val _searchResults = MutableStateFlow<List<PremiumizeItem>?>(null)
-    val searchResults: StateFlow<List<PremiumizeItem>?> = _searchResults.asStateFlow()
-
-    private val _downloadProgress = MutableStateFlow<Map<String, Float>>(emptyMap())
-    val downloadProgress: StateFlow<Map<String, Float>> = _downloadProgress.asStateFlow()
-
-    private val _downloadError = MutableStateFlow<String?>(null)
-    val downloadError: StateFlow<String?> = _downloadError.asStateFlow()
-
-    /** (folder id, display name), root first. */
-    private val folderStack = mutableListOf<Pair<String?, String>>(null to "My cloud")
-
-    private val _folderTrail = MutableStateFlow<List<String>>(listOf("My cloud"))
-    val folderTrail: StateFlow<List<String>> = _folderTrail.asStateFlow()
 
     val isCloudConnected: Boolean get() = _pmAccount.value != null
 

@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.0.2 — 2026-11-15
+
+Launch crash fix (second crash, different from v1.0.1).
+
+- `OneViewModel` init-order NPE: the `init` block calls `refreshLibrary()`,
+  which writes `_portStatuses`, but `_portStatuses` was declared after the
+  `init` block. Kotlin initializes properties and init blocks in declaration
+  order, so the backing field was still null and every launch died with
+  `NullPointerException: MutableStateFlow.setValue on a null object
+  reference` at `OneViewModel.kt:111` (bugreport 2026-11-15 18:39-18:40,
+  five crashes on the Fold 8). All `MutableStateFlow` declarations (and
+  `folderStack`) now sit above `init`, with a comment explaining why.
+- CI guard: the build fails if any `MutableStateFlow` in `OneViewModel.kt`
+  is declared after the `init {` line. A unit test cannot cover this — the
+  project has no Robolectric and `OneViewModel` is an `AndroidViewModel` —
+  so the line-order check tests the exact seam instead.
+
 ## v1.0.1 — 2026-11-15
 
 Launch crash fix.

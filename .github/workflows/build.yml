@@ -16,6 +16,30 @@ jobs:
         # ".MainActivity" resolves against the com.garrietta.one namespace,
         # a class that is not in the dex, and the app dies on launch.
         run: grep -q 'android:name="dev.one.launcher.MainActivity"' app/src/main/AndroidManifest.xml
+      - name: Guard ViewModel init order
+        # Regression guard for the v1.0.2 launch crash: OneViewModel's init
+        # block calls refreshLibrary(), which writes _portStatuses. Kotlin
+        # initializes properties and init blocks in declaration order, so
+        # every MutableStateFlow must be declared BEFORE the init block —
+        # otherwise its backing field is still null and the app dies with
+        # an NPE on launch. The project has no Robolectric, so a unit test
+        # cannot construct this AndroidViewModel; the line-order check
+        # below tests the exact seam instead.
+        run: |
+          python3 - <<'PY'
+          import re, sys
+          path = "app/src/main/java/dev/one/launcher/ui/OneViewModel.kt"
+          lines = open(path).read().splitlines()
+          init_line = next(i + 1 for i, l in enumerate(lines) if re.search(r'^\s*init\s*\{', l))
+          bad = [(i + 1, l.strip()) for i, l in enumerate(lines)
+                 if re.search(r'private val _\w+\s*=\s*MutableStateFlow', l) and i + 1 > init_line]
+          if bad:
+              print(f"FAIL: MutableStateFlow declared after init (line {init_line}):")
+              for n, l in bad:
+                  print(f"  line {n}: {l}")
+              sys.exit(1)
+          print(f"OK: all MutableStateFlow declarations precede init (line {init_line})")
+          PY
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
