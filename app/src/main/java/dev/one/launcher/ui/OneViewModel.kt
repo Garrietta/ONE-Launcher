@@ -12,6 +12,7 @@ import dev.one.launcher.data.DownloadState
 import dev.one.launcher.data.MatchedFile
 import dev.one.launcher.data.MatchedFilesStore
 import dev.one.launcher.data.PortCatalog
+import dev.one.launcher.data.PortCatalog
 import dev.one.launcher.data.PortCatalogRepository
 import dev.one.launcher.data.PortMatcher
 import dev.one.launcher.data.PortSettings
