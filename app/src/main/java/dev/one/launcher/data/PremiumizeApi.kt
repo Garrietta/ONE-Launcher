@@ -21,7 +21,7 @@ import okhttp3.Request
  * - GET /item/details (a file already in your cloud; returns its link)
  * - GET /item/listall (flat list of files you own)
  *
- * Never called here: /transfer/create, /transfer/directdl, /cache/*,
+ * Never called here: /transfer/create, /transfer/directdl, or any cache endpoint,
  * or anything involving magnets, torrents, or hoster links. There is no
  * "download this game from the internet" in ONE — the Download action
  * only pulls a file already in your Premiumize cloud to this device.
