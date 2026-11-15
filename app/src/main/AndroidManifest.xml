@@ -24,8 +24,14 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.ONE"
         android:usesCleartextTraffic="false">
+        <!-- Fully qualified on purpose: the Kotlin class lives in
+             package dev.one.launcher, while the namespace/applicationId is
+             com.garrietta.one. A leading-dot name (".MainActivity") resolves
+             against com.garrietta.one, a class that does not exist in the
+             dex, and the app crashes on every launch with
+             ClassNotFoundException. Do not shorten this name. -->
         <activity
-            android:name=".MainActivity"
+            android:name="dev.one.launcher.MainActivity"
             android:exported="true"
             android:theme="@style/Theme.ONE">
             <intent-filter>

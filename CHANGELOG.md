@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.0.1 — 2026-11-15
+
+Launch crash fix.
+
+- Manifest activity name is now fully qualified:
+  `dev.one.launcher.MainActivity`. Previously `.MainActivity` resolved
+  against the `com.garrietta.one` namespace/applicationId to
+  `com.garrietta.one.MainActivity`, which is not in the dex — every launch
+  died with `ClassNotFoundException: Didn't find class
+  "com.garrietta.one.MainActivity"` (bugreport 2026-11-15 18:20-18:21,
+  three crashes on the Fold 8). The Kotlin class lives in package
+  `dev.one.launcher`; the manifest now says so explicitly.
+- CI guard: the build fails unless the manifest contains the fully
+  qualified activity name, so this exact seam cannot regress silently.
+
 ## v1.0.0 — 2026-11-15
 
 Initial release.

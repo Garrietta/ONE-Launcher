@@ -10,6 +10,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Guard manifest activity name
+        # Regression guard for the v1.0.1 launch crash: the activity must be
+        # the fully qualified dev.one.launcher.MainActivity. A leading-dot
+        # ".MainActivity" resolves against the com.garrietta.one namespace,
+        # a class that is not in the dex, and the app dies on launch.
+        run: grep -q 'android:name="dev.one.launcher.MainActivity"' app/src/main/AndroidManifest.xml
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
