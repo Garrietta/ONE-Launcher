@@ -51,13 +51,22 @@ enum class MatchKind {
     /** An archive whose name hits a hint and whose zip contents were
      *  inspected locally and contain a file that matches the port directly. */
     ARCHIVE_CONFIRMED,
-    /** An archive whose name hits a hint and is specific (v1.8.4): it
-     *  hits at least two of the port's hints (each 4+ chars), or its
-     *  title is at least 90% explained by the game's title. A single
-     *  shared word ("fire", "man", "star") is no longer enough. It
-     *  probably contains the port's file, but the contents were not
-     *  (or could not be) inspected — a .7z/.rar can never be inspected
-     *  here, and a .zip is only inspected once it is on this device. */
+    /** An archive whose name hits a hint and is specific (v1.8.4,
+     *  tightened v1.8.8): it hits at least two of the port's hints
+     *  (each 4+ chars), or its title is at least 90% explained by
+     *  the game's title AND passes the similarity guard
+     *  ([PortMatcher.passesSimilarityGuard] — shared title words
+     *  >= 2, or the game's title words are all in the file's, or
+     *  the file's words are the game's minus only the port's
+     *  platform word). A single shared word ("fire", "man", "star",
+     *  "hero", "zero") is no longer enough, even at similarity 1.0
+     *  — a file whose title reduces to one word shares that word
+     *  with any game containing it ("DJ Hero" with Guitar Hero
+     *  Series, "F-Zero" with Metroid Zero Mission). It probably
+     *  contains the port's file, but the contents were not (or
+     *  could not be) inspected — a .7z/.rar can never be inspected
+     *  here, and a .zip is only inspected once it is on this
+     *  device. */
     ARCHIVE_PROVISIONAL,
     /**
      * Name-only, provisional: the catalog lists no file formats for this
@@ -115,11 +124,15 @@ data class PortMatch(
  *
  * Archives (.zip, .7z, .rar) are matched on name only: an archive matches
  * a port when its base name (minus the extension) hits one of the port's
- * hints AND is specific (v1.8.4) — at least two of the port's hints (each
- * 4+ chars), or a title at least 90% explained by the game's title. A
- * .zip that is already on this device can be confirmed by inspecting its
- * entries with [inspectZip]; .7z/.rar are never inspected (no 7z library
- * is bundled) and stay provisional.
+ * hints AND is specific (v1.8.4, tightened v1.8.8) — at least two of the
+ * port's hints (each 4+ chars), or a title at least 90% explained by the
+ * game's title that passes the similarity guard (shared title
+ * words >= 2, or the game's title words are all in the file's, or
+ * the file's words are the game's minus only the port's platform
+ * word). A .zip that is already on this
+ * device can be confirmed by inspecting its entries with [inspectZip];
+ * .7z/.rar are never inspected (no 7z library is bundled) and stay
+ * provisional.
  *
  * Ports the catalog lists no formats for (most of the catalog) match by
  * name only, through the same whole-word hint rules — on a DISTINCTIVE
@@ -127,7 +140,10 @@ data class PortMatch(
  * ([Port.distinctiveNameHints]), or on at least two of the port's
  * filename hints of 4+ characters — and are labeled provisional
  * ([MatchKind.NAME_ONLY]) — the format was never verified, so no
- * extension is invented for them.
+ * extension is invented for them. Both ways also require the
+ * title-similarity gate (v1.8.0) AND the similarity guard (v1.8.8,
+ * corrected): a single shared word at similarity 1.0 ("hero" in
+ * "DJ Hero" vs Guitar Hero Series) passes the 90% gate on its own.
  */
 object PortMatcher {
     val ARCHIVE_EXTENSIONS = listOf(".zip", ".7z", ".rar")
@@ -259,11 +275,15 @@ object PortMatcher {
      * strict extension-gated matching above, unchanged.
      *
      * Both name-only ways also require the title-similarity gate
-     * (v1.8.0, [titleSimilarity] >= 0.90): a distinctive single word
-     * can still be a common word in file names ("blue", "gold",
-     * "double", "system"), so the file's title must be mostly
-     * explained by the game's title. DIRECT matches are unchanged —
-     * the gate applies only to NAME_ONLY.
+     * (v1.8.0, [titleSimilarity] >= 0.90) AND the similarity guard
+     * (v1.8.8, corrected, [passesSimilarityGuard]): a distinctive
+     * single word can still be a common word in file names ("blue",
+     * "gold", "double", "system"), so the file's title must be
+     * mostly explained by the game's title — and a single shared
+     * word at similarity 1.0 ("hero" in "DJ Hero") passes the 90%
+     * gate on its own, so the guard must pass too. DIRECT matches
+     * are unchanged — the gate and guard apply only to NAME_ONLY
+     * and the ARCHIVE_PROVISIONAL similarity path.
      */
     fun matchKind(fileName: String, port: Port, fileUrl: String? = null): MatchKind? {
         // The game-file gate first: a non-game file matches nothing,
@@ -284,8 +304,21 @@ object PortMatcher {
             // title-similarity gate (v1.8.0): the file's title must
             // be at least 90% explained by the game's title, or the
             // shared word is a coincidence ("blue" in "Pokemon Blue"
-            // is not Blue Dragon's file).
-            if (titleSimilarity(fileName, port.game) < NAME_ONLY_MIN_TITLE_SIMILARITY) {
+            // is not Blue Dragon's file). The similarity guard
+            // (v1.8.8, corrected) is an additional precondition on
+            // the same gate: a single shared word at similarity 1.0
+            // ("hero" in "DJ Hero" vs Guitar Hero Series) passes
+            // the 90% gate on its own, so the guard must also pass
+            // — the live Guitar Hero Series port has no formats, so
+            // it matches ONLY through this NAME_ONLY branch, and the
+            // v1.8.8 archive-only guard left DJ Hero / Super Hero /
+            // World Hero matching it. The distinctive / two-hint
+            // requirement below is unchanged: it is still what
+            // keeps Pokopia (game "Pokopia" ⊆ file "Pokémon
+            // Pokopia", guard leg (b), distinctive "pokopia" hits).
+            if (titleSimilarity(fileName, port.game) < NAME_ONLY_MIN_TITLE_SIMILARITY ||
+                !passesSimilarityGuard(fileName, port.game, port.platformId)
+            ) {
                 return null
             }
             if (port.distinctiveNameHints.isNotEmpty() &&
@@ -321,6 +354,44 @@ object PortMatcher {
         // hints and no regex keeps the old behavior, and a port
         // regex still matches on its own — a regex is a specific
         // pattern, not a shared word.
+        //
+        // The similarity path is tightened further (v1.8.8): a
+        // title that reduces to ONE significant word shares that
+        // word with the game title, so the symmetric overlap
+        // coefficient is 1.0 (1/1) and a hint hits — "DJ Hero" is
+        // just ["hero"] against Guitar Hero Series ["guitar",
+        // "hero", "series"], "F-Zero" just ["zero"] against
+        // Metroid Zero Mission ["metroid", "zero", "mission"].
+        // The similarity leg now also requires the guard
+        // ([passesSimilarityGuard]): shared title words >= 2, or
+        // the game's title words are all in the file's, or the
+        // file's words are the game's minus only the port's
+        // platform word. The game-⊆-file leg is what saves the
+        // single-word games: SM64 ["mario"] ⊆ ["mario"], SoH
+        // ["ocarina"] ⊆ ["ocarina", "master", "quest"] (the OoT
+        // Master Quest magnet), GoldenEye ["goldeneye"] ⊆
+        // ["goldeneye", "007"]; the platform-word leg saves
+        // SimCity ["simcity"] vs ["simcity", "snes"] on the SNES
+        // port. A proper subset that is neither ("hero" vs
+        // ["guitar", "hero", "series"], "zero" vs ["metroid",
+        // "zero", "mission"]) is blocked. A literal "shared >= 2
+        // OR >= 1 DISTINCTIVE hint" bar was swept and rejected:
+        // it FAILS to block DJ Hero ("hero" IS distinctive — only
+        // the Guitar Hero Series port has it in its hint set) and
+        // it BREAKS Super Mario 64's own archive ("mario" is
+        // shared, not distinctive, and the distinctive hint
+        // "ghostship" is not in the file). The first v1.8.8 guard
+        // (shared >= 2 OR file words exactly the game's words)
+        // was also wrong: it did not fix Guitar Hero at all (the
+        // live port has no formats, so it matches through
+        // NAME_ONLY, which that guard did not touch) and its
+        // exact-title leg lost GoldenEye 007, SimCity, and the
+        // OoT Master Quest magnet. The guard applies to NAME_ONLY
+        // too (above): its distinctive-hint leg is essential for
+        // Pokopia (the .nup matches ONLY through the distinctive
+        // hint "pokopia"), so the distinctive / two-hint
+        // requirement is kept and the guard is an additional
+        // precondition, not a replacement.
         if (port.fileNameHints.isEmpty() && port.fileNameRegex == null) {
             return MatchKind.ARCHIVE_PROVISIONAL
         }
@@ -337,11 +408,64 @@ object PortMatcher {
             return MatchKind.ARCHIVE_PROVISIONAL
         }
         if (titleSimilarity(baseName, port.game) >= NAME_ONLY_MIN_TITLE_SIMILARITY &&
-            nameHitsHints(baseName, port.fileNameHints, null)
+            nameHitsHints(baseName, port.fileNameHints, null) &&
+            passesSimilarityGuard(baseName, port.game, port.platformId)
         ) {
             return MatchKind.ARCHIVE_PROVISIONAL
         }
         return null
+    }
+
+    /**
+     * The v1.8.8 similarity guard, applied to BOTH the
+     * ARCHIVE_PROVISIONAL similarity path and the NAME_ONLY gate:
+     * true when ANY of these holds —
+     * (a) the file's title and the game's title share at least two
+     * significant words;
+     * (b) the game's title words are all in the file's title words
+     * (as sets — the file is the game, possibly with extra words:
+     * "GoldenEye 007" is the "GoldenEye" game, the OoT Master
+     * Quest magnet is the "Ocarina" game, "Pokémon Pokopia" is
+     * the "Pokopia" game);
+     * (c) the file's title words are all in the game's, and every
+     * word the game has that the file lacks equals the port's
+     * platform id (lowercased) — the game's extra word is only
+     * its platform disambiguator ("SimCity" vs "SimCity SNES" on
+     * the SNES port).
+     * A file whose title reduces to one significant word ("DJ
+     * Hero" → ["hero"]) shares that word with the game title, so
+     * the overlap coefficient is 1.0 — similarity alone cannot
+     * tell it from a file named after the game. No distinctive-hint
+     * leg: it is unnecessary (SoH / Pokopia / SM64 are covered by
+     * leg (b)) and harmful ("hero" is distinctive and hits DJ
+     * Hero, so a distinctive leg would let DJ Hero through). The
+     * file side is the file's TITLE words ([titleWords] on the
+     * name as given) — deliberately WITHOUT the path-prefix strip
+     * [titleSimilarity] uses. That strip exists for the similarity
+     * ratio, where a remote path prefix must not count — but the
+     * guard compares titles, and "/" in a title is part of the
+     * title (v1.8.5: ".hack//versus" is "hack" + "versus", not
+     * "versus"). Stripping would eat ".hack" from the game's own
+     * file ".hack//Versus (USA).iso", leaving ["versus"] against
+     * ["hack", "versus"] — shared 1, and the missing word "hack"
+     * is not the platform id — so the guard would block the
+     * game's own dump. The strip's purpose never applies here
+     * anyway: the guard's inputs are bare entry / file names, and
+     * a path, if any, arrives via the separate fileUrl argument,
+     * which the guard never sees.
+     */
+    private fun passesSimilarityGuard(
+        fileName: String,
+        gameTitle: String,
+        platformId: String
+    ): Boolean {
+        val fileWords = titleWords(fileName).toSet()
+        val gameWords = titleWords(gameTitle).toSet()
+        if (fileWords.intersect(gameWords).size >= 2) return true
+        if (gameWords.all { it in fileWords }) return true
+        val platform = platformId.lowercase()
+        return fileWords.all { it in gameWords } &&
+            (gameWords - fileWords).all { it == platform }
     }
 
     private fun nameHitsHints(name: String, hints: List<String>, regex: String?): Boolean {
@@ -427,8 +551,9 @@ object PortMatcher {
      * NAME_ONLY. A magnet whose name has no game-file extension
      * matches nothing. The result is a display-only copy link — the
      * caller must keep it in the magnet display, out of "Your
-     * files" and "Has files" (see [matchRemoteEntries] and
-     * [matchServerFilesForGame]).
+     * files" (magnets have their own Magnet links section); they
+     * DO count for "Has files" (v1.8.8, see
+     * [dev.one.launcher.data.gamesWithMatches]).
      */
     fun matchMagnetKind(entry: RemoteEntry, port: Port): MatchKind? {
         if (!entry.isMagnet) return null

@@ -1,7 +1,9 @@
 package dev.one.launcher
 
+import android.graphics.Color
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,7 +19,19 @@ import dev.one.launcher.ui.theme.PortsideTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // The theme is FIXED dark (PortsideTheme: darkColorScheme,
+        // background #0B0B0D, no light theme) on every device — but
+        // bare enableEdgeToEdge() follows the SYSTEM theme, so on a
+        // light-system device the status-bar icons are dark (black)
+        // on the app's black background and the time/battery are
+        // unreadable (Garrett's v1.8.7 video). Pin both bars to the
+        // dark style, always: light icons on the dark theme.
+        // Not JVM-testable — device retest: time/battery visible in
+        // light icons.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT)
+        )
         setContent {
             PortsideTheme {
                 Surface(

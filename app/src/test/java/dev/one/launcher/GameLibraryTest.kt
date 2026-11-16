@@ -19,6 +19,7 @@ import dev.one.launcher.data.STAR_CACHE_TTL_MS
 import dev.one.launcher.data.dedupeGameFiles
 import dev.one.launcher.data.fileSourceLabel
 import dev.one.launcher.data.filterGames
+import dev.one.launcher.data.gamesWithMatches
 import dev.one.launcher.data.groupPortsByGame
 import dev.one.launcher.data.hintsFromGameTitle
 import dev.one.launcher.data.isPairingCacheUsable
@@ -622,9 +623,13 @@ class GameLibraryTest {
     @Test
     fun magnetEntriesNeverCountAsGameFiles() {
         // A magnet entry is a copyable link, not a file: it must not
-        // count toward "Has files", even when its name is a game
-        // file's name with a game extension (.zip). The server source
-        // here holds only magnets, so no game has files.
+        // count as a GAME FILE — the file-pairing map stays empty
+        // for a magnet-only source, even when its name is a game
+        // file's name with a game extension (.zip). (v1.8.8: magnets
+        // DO count toward the "Has files" FILTER set, through
+        // [gamesWithMatches] — that is a union over the two pairing
+        // maps, not a change to what counts as a file. See
+        // magnetsNeverAppearInYourFilesButCountForHasFiles.)
         val magnetUri =
             "magnet:?xt=urn:btih:9c6e87aaca8a26f4755d44079d5575b1732428f6" +
                 "&dn=Acorn%20-%20Archimedes"
@@ -1435,13 +1440,13 @@ class GameLibraryTest {
         assertEquals(cachedMagnets, mergeLiveAndCachedMagnets(emptyList(), cachedMagnets))
     }
 
-    // ---- Poster tags (v1.8.6) ----
+    // ---- Poster tags (v1.8.6; status v1.8.8) ----
     //
     // A matched magnet counts toward the poster tag: the tag appears
     // when a game has a matched downloadable file OR a matched magnet
-    // link, showing the magnet's source ("json") like a file's. The
-    // "Has files" filter is unchanged — magnets still don't count
-    // there; only the poster's display changes.
+    // link, showing the magnet's source ("json") like a file's. And
+    // (v1.8.8) magnets count toward "Has files" too — see
+    // [gamesWithMatches].
 
     private fun serverFile(name: String, where: String) = GameFile(
         name = name,
@@ -1521,16 +1526,43 @@ class GameLibraryTest {
     }
 
     @Test
-    fun posterStatusTextMagnetOnlyReadsMagnetMatched() {
-        // A magnet-only game does not read "File matched" — a magnet
-        // is not a file.
-        assertEquals("Magnet matched", posterStatusText(false, false, true))
-        assertEquals("File matched", posterStatusText(false, true, true))
-        assertEquals("File matched", posterStatusText(false, true, false))
-        assertEquals("Ready to play", posterStatusText(true, true, false))
-        assertEquals("Installed", posterStatusText(true, false, false))
-        assertEquals("Installed", posterStatusText(true, false, true))
-        assertEquals("Not installed", posterStatusText(false, false, false))
+    fun posterStatusTextIsInstallStateOnly() {
+        // v1.8.8: the poster status is install state ONLY — it no
+        // longer restates match-ness. The source chip
+        // ([posterSourceLabel]) is the one indicator of a matched
+        // file or magnet link, so a magnet-only game does not read
+        // "Magnet matched" and a file game does not read "File
+        // matched" — both read "Not installed" (or "Installed" when
+        // installed) with the chip beside them.
+        assertEquals("Not installed", posterStatusText(false, false))
+        assertEquals("Not installed", posterStatusText(false, true))
+        assertEquals("Ready to play", posterStatusText(true, true))
+        assertEquals("Installed", posterStatusText(true, false))
+    }
+
+    @Test
+    fun magnetOnlyGameShowsExactlyOneMagnetIndicator() {
+        // Garrett's v1.8.7 video: "I only need one indicator of the
+        // magnet link." A magnet-only game shows the "json · Magnet"
+        // chip and an install-only status — never a second
+        // "Magnet matched" status. A file game shows its source chip
+        // with no magnet indicator at all.
+        val status = posterStatusText(false, false)
+        val chip = posterSourceLabel(
+            emptyList(),
+            listOf(magnetLink("Triple Pack - Trials HD & Limbo & 'Splosion Man (USA, Europe).zip", "json"))
+        )
+        assertEquals("Not installed", status)
+        assertEquals("json · Magnet", chip)
+        assertFalse(status.contains("Magnet"))
+        assertFalse(chip?.contains("matched") ?: false)
+        // Installed magnet-only game: "Installed" + the same chip.
+        assertEquals("Installed", posterStatusText(true, false))
+        // File game: source chip, no magnet indicator anywhere.
+        val fileChip = posterSourceLabel(listOf(serverFile("Game (USA).zip", "json")), emptyList())
+        assertEquals("json", fileChip)
+        assertFalse(fileChip?.contains("Magnet") ?: false)
+        assertFalse(posterStatusText(false, true).contains("Magnet"))
     }
 
     @Test
@@ -1615,11 +1647,17 @@ class GameLibraryTest {
     }
 
     @Test
-    fun magnetsDoNotAppearInYourFilesOrHasFiles() {
-        // The v1.8.0 guarantee, now with magnets that DO match as
-        // magnets: they still never appear in "Your files" and never
-        // count toward "Has files" — the magnet display is a separate
-        // channel.
+    fun magnetsNeverAppearInYourFilesButCountForHasFiles() {
+        // v1.8.8 reversal (Garrett's v1.8.7 video: "if it has a
+        // linked file, it should pop up under this has files page,
+        // which some of them the magnets count as has files").
+        // Magnets still never appear in "Your files" — the
+        // file-pairing map stays empty for a magnet-only source, and
+        // the game page shows magnets in their own Magnet links
+        // section. But they DO count toward "Has files": the set is
+        // the union of the file map's keys and the magnet map's
+        // keys ([gamesWithMatches]), so a magnet-only game
+        // (PokePark Wii here) appears under the filter.
         val sources = listOf(
             "json" to listOf(
                 magnetEntry("PokePark Wii - Pikachu's Adventure (USA).zip", 123)
@@ -1627,26 +1665,49 @@ class GameLibraryTest {
         )
         assertTrue(matchServerFilesForGame(sources, listOf(pokepark)).isEmpty())
         val games = groupPortsByGame(listOf(pokepark))
-        assertTrue(
-            pairGamesWithFiles(
-                games = games,
-                cloudItems = emptyList(),
-                cloudFallback = emptyMap(),
-                serverSources = sources,
-                detected = emptyMap(),
-                localStates = emptyMap()
-            ).keys.isEmpty()
+        val pokeparkKey = games.single().key
+        val fileKeys = pairGamesWithFiles(
+            games = games,
+            cloudItems = emptyList(),
+            cloudFallback = emptyMap(),
+            serverSources = sources,
+            detected = emptyMap(),
+            localStates = emptyMap()
+        ).keys
+        assertTrue(fileKeys.isEmpty())
+        val magnetKeys = pairGamesWithMagnets(
+            games = games,
+            serverSources = sources
+        ).keys
+        assertEquals(setOf(pokeparkKey), magnetKeys)
+        assertEquals(setOf(pokeparkKey), gamesWithMatches(fileKeys, magnetKeys))
+        // And the filter itself keeps the game when matchesOnly is on.
+        assertEquals(
+            listOf(games.single()),
+            filterGames(
+                games,
+                LibraryFilter(matchesOnly = true),
+                gamesWithMatches(fileKeys, magnetKeys)
+            )
         )
-        assertTrue(
-            pairGamesWithFiles(
-                games = games,
-                cloudItems = emptyList(),
-                cloudFallback = emptyMap(),
-                serverSources = sources,
-                detected = emptyMap(),
-                localStates = emptyMap()
-            ).isEmpty()
+        // A game with neither files nor magnets still stays out.
+        assertEquals(
+            emptyList<GameEntry>(),
+            filterGames(
+                games,
+                LibraryFilter(matchesOnly = true),
+                gamesWithMatches(emptySet(), emptySet())
+            )
         )
+    }
+
+    @Test
+    fun gamesWithMatchesIsTheUnionOfFileAndMagnetKeys() {
+        assertEquals(
+            setOf("a--x", "b--x", "c--x"),
+            gamesWithMatches(setOf("a--x", "b--x"), setOf("b--x", "c--x"))
+        )
+        assertEquals(emptySet<String>(), gamesWithMatches(emptySet(), emptySet()))
     }
 
     @Test

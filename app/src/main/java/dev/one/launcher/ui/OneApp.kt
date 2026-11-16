@@ -494,8 +494,9 @@ private fun LibraryScreen(
     // come from the games themselves, so a curated-only port's
     // platform ("Super Nintendo") and its catalog sibling's platform
     // name always agree. "Has files" is a third, additional filter:
-    // only games with at least one matching file (local, cloud, or
-    // server). Off by default.
+    // only games with at least one matching file or magnet link
+    // (local, cloud, or server; v1.8.8: magnets count). Off by
+    // default.
     val libraryFilter by viewModel.libraryFilter.collectAsState()
     val query = libraryFilter.query
     val platformFilter = libraryFilter.platform
@@ -684,8 +685,7 @@ private fun GameList(
                                 val matchedMagnets = magnetPairings[game.key].orEmpty()
                                 val anyFile = game.ports.any { statuses[it.id]?.hasFile == true } ||
                                     matchedFiles.isNotEmpty()
-                                val anyMagnet = matchedMagnets.isNotEmpty()
-                                val statusText = posterStatusText(anyInstalled, anyFile, anyMagnet)
+                                val statusText = posterStatusText(anyInstalled, anyFile)
                                 val sourceLabel = posterSourceLabel(matchedFiles, matchedMagnets)
                                 GameGridCard(
                                     game = game,
@@ -703,19 +703,19 @@ private fun GameList(
             }
             items(games, key = { it.key }) { game ->
                 val anyInstalled = game.ports.any { statuses[it.id]?.isInstalled == true }
-                // The poster tag (v1.8.6): a matched magnet
-                // counts like a matched file — a magnet-only
-                // game ('Splosion Man's Triple Pack magnet)
-                // shows "Magnet matched" with the tag
-                // "json · Magnet". "Has files" is untouched
-                // (magnets still don't count there); this is
-                // the poster's local display only.
+                // The poster tag (v1.8.6, status v1.8.8): a matched
+                // magnet counts like a matched file for the SOURCE
+                // tag — a magnet-only game ('Splosion Man's Triple
+                // Pack magnet) shows "json · Magnet", and that chip
+                // is the single magnet indicator: the status is
+                // install state only ("Not installed" / "Installed"
+                // / "Ready to play"), never "Magnet matched". "Has
+                // files" counts magnets now (v1.8.8).
                 val matchedFiles = pairingCache[game.key].orEmpty()
                 val matchedMagnets = magnetPairings[game.key].orEmpty()
                 val anyFile = game.ports.any { statuses[it.id]?.hasFile == true } ||
                     matchedFiles.isNotEmpty()
-                val anyMagnet = matchedMagnets.isNotEmpty()
-                val statusText = posterStatusText(anyInstalled, anyFile, anyMagnet)
+                val statusText = posterStatusText(anyInstalled, anyFile)
                 val sourceLabel = posterSourceLabel(matchedFiles, matchedMagnets)
                 GameGridCard(
                     game = game,
@@ -777,7 +777,8 @@ private fun LibrarySearchRow(
         )
         Spacer(modifier = Modifier.width(8.dp))
         // "Has files": only games with at least one matching file
-        // (local, cloud, or server). Composes with the platform filter.
+        // or magnet link (local, cloud, or server; v1.8.8: magnets
+        // count). Composes with the platform filter.
         FilterChip(
             selected = matchesOnly,
             onClick = { onMatchesOnlyChange(!matchesOnly) },
@@ -903,18 +904,18 @@ private fun UnfoldedLibrary(
             ) {
                 items(games, key = { it.key }) { game ->
                     val anyInstalled = game.ports.any { statuses[it.id]?.isInstalled == true }
-                    // The poster tags (v1.8.6): the unfolded grid
-                    // posters carry the same status + source tag as
-                    // the folded shelf — they were missing here.
-                    // A matched magnet counts like a matched file
-                    // for the tag (see GameList): a magnet-only game
-                    // reads "Magnet matched" with "json · Magnet".
+                    // The poster tags (v1.8.6, status v1.8.8): the
+                    // unfolded grid posters carry the same status +
+                    // source tag as the folded shelf. A matched
+                    // magnet counts like a matched file for the
+                    // source tag (see GameList): a magnet-only game
+                    // shows "json · Magnet" as its single magnet
+                    // indicator, with an install-only status.
                     val matchedFiles = pairingCache[game.key].orEmpty()
                     val matchedMagnets = magnetPairings[game.key].orEmpty()
                     val anyFile = game.ports.any { statuses[it.id]?.hasFile == true } ||
                         matchedFiles.isNotEmpty()
-                    val anyMagnet = matchedMagnets.isNotEmpty()
-                    val statusText = posterStatusText(anyInstalled, anyFile, anyMagnet)
+                    val statusText = posterStatusText(anyInstalled, anyFile)
                     val sourceLabel = posterSourceLabel(matchedFiles, matchedMagnets)
                     GameGridCard(
                         game = game,
@@ -978,9 +979,11 @@ private fun UnfoldedLibrary(
  * the game's cover art, portrait, filling the grid column, with its
  * title and platform underneath. The selected card carries a lime
  * outline; a game with any port installed carries a small lime play
- * mark on the cover. The status ("Not installed", "File matched",
- * ...) and the file source tag (Premiumize / the remote folder's
- * name / Local) ride on the art (v1.8.6 — they were missing here).
+ * mark on the cover. The status ("Not installed", "Installed",
+ * "Ready to play" — install state only, v1.8.8) and the file source
+ * tag (Premiumize / the remote folder's name / Local, or "json ·
+ * Magnet" for a magnet-only game) ride on the art (v1.8.6 — they
+ * were missing here).
  */
 @Composable
 private fun GameGridCard(
@@ -2127,10 +2130,11 @@ private fun GamePageContent(
         // Copyable links from the remote folders, matched to this game
         // by name through the same matcher. They are not files — no
         // download, never opened in the browser, and they never count
-        // toward "Your files" or "Has files". Shown only when the
-        // game has at least one; a game with magnets but no files
-        // still reads "No file for this game yet" above, which is
-        // accurate — its only links are magnets.
+        // toward "Your files" (they DO count toward "Has files",
+        // v1.8.8). Shown only when the game has at least one; a game
+        // with magnets but no files still reads "No file for this
+        // game yet" above, which is accurate — its only links are
+        // magnets.
         if (gameMagnets.isNotEmpty()) {
             Spacer(modifier = Modifier.height(16.dp))
             Text(text = "Magnet links", style = MaterialTheme.typography.titleMedium)

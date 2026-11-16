@@ -227,7 +227,9 @@ data class GameMagnetLink(
  * once, against the first matching port; the same magnet URI listed
  * in two sources is listed once. The result is ordered by name.
  * These are display-only copy links: they never enter "Your files"
- * or "Has files" — see [matchServerFilesForGame].
+ * (the game page shows them in their own Magnet links section) —
+ * but they DO count toward "Has files" (v1.8.8, see
+ * [gamesWithMatches]).
  */
 /**
  * One magnet entry matched to one of a game's ports, before the
@@ -504,8 +506,9 @@ data class LibraryFilter(
  * The Library's game filter, as a pure function of the games, the
  * filter state, and the set of games with files. Filters by game
  * title (or a port title inside a game) and by platform; "Has files"
- * keeps only games with at least one matching file. The same rule the
- * Library screen applies.
+ * keeps only games with at least one matching file or magnet link
+ * (v1.8.8: a magnet link counts — see [gamesWithMatches]). The same
+ * rule the Library screen applies.
  */
 fun filterGames(
     games: List<GameEntry>,
@@ -518,6 +521,23 @@ fun filterGames(
             game.title.contains(filter.query, ignoreCase = true) ||
             game.ports.any { it.title.contains(filter.query, ignoreCase = true) })
 }
+
+/**
+ * The "Has files" set (v1.8.8): the games with at least one matching
+ * downloadable file OR at least one matching magnet link. Garrett's
+ * v1.8.7 video: "if it has a linked file, it should pop up under
+ * this has files page, which some of them the magnets count as has
+ * files." This supersedes the v1.8.3 rule (magnets never in "Has
+ * files"). The file keys come from the file-pairing map
+ * ([pairGamesWithFiles]), the magnet keys from the magnet-pairing
+ * map ([pairGamesWithMagnets]); neither map changes — the union is
+ * taken here, at the two sites that derive the live set. Magnets
+ * still never appear in "Your files" (they have their own Magnet
+ * links section on the game page) — only the filter set counts them.
+ * Pure — unit-tested.
+ */
+fun gamesWithMatches(fileKeys: Set<String>, magnetKeys: Set<String>): Set<String> =
+    fileKeys + magnetKeys
 
 // ---- File source label (v1.8.2) ----
 
@@ -552,9 +572,10 @@ fun magnetSourceLabel(magnet: GameMagnetLink): String =
  * link, not a file, so the tag says so ("json · Magnet"). A game
  * whose only link is a magnet — 'Splosion Man's Triple Pack
  * magnet — still shows a tag. Null when the game has neither a
- * file nor a magnet. Pure — unit-tested. This is display only: it
- * never feeds "Has files" (magnets still don't count there), and
- * it never changes any matching.
+ * file nor a magnet. Pure — unit-tested. This is the ONE magnet
+ * indicator on the poster (v1.8.8): the status no longer restates
+ * match-ness (see [posterStatusText]), so a magnet-only game shows
+ * exactly this chip. Display only; it never changes any matching.
  */
 fun posterSourceLabel(
     files: List<GameFile>,
@@ -566,21 +587,25 @@ fun posterSourceLabel(
 }
 
 /**
- * The poster status for a game (v1.8.6): the same "Ready to play" /
- * "Installed" / "File matched" / "Not installed" as the shelf, plus
- * "Magnet matched" for a game whose only link is a magnet — a
- * magnet is not a file, so it does not read "File matched". Pure —
- * unit-tested. Display only; "Has files" is unaffected.
+ * The poster status for a game (v1.8.8): install state ONLY —
+ * "Ready to play" / "Installed" / "Not installed". It no longer
+ * restates match-ness: the v1.8.6 "File matched" / "Magnet matched"
+ * texts are gone, because the source tag ([posterSourceLabel]) is
+ * already the one indicator of a matched file or magnet link —
+ * Garrett's v1.8.7 video: "I only need one indicator of the magnet
+ * link." A magnet-only game reads "Not installed" (or "Installed"
+ * when installed) with the "json · Magnet" chip; a magnet is a link
+ * to get the file, not the file itself, so it never reads "Ready to
+ * play". A not-installed game with a file or magnet reads "Not
+ * installed" with the source chip — the chip IS the match indicator.
+ * Pure — unit-tested. Display only; "Has files" is unaffected.
  */
 fun posterStatusText(
     anyInstalled: Boolean,
-    anyFile: Boolean,
-    anyMagnet: Boolean
+    anyFile: Boolean
 ): String = when {
     anyInstalled && anyFile -> "Ready to play"
     anyInstalled -> "Installed"
-    anyFile -> "File matched"
-    anyMagnet -> "Magnet matched"
     else -> "Not installed"
 }
 
@@ -889,8 +914,9 @@ fun pairGamesWithFiles(
  * background refresh can run it alongside [pairGamesWithFiles] and
  * the cache round-trip is unit-testable. Only games with at least one
  * magnet are present. Magnet pairings are a separate channel from the
- * downloadable-file pairings — they never feed "Has files" or "Your
- * files". Indexed the same way as the file pairing: all magnets are
+ * downloadable-file pairings — they never feed "Your files", but
+ * they DO feed "Has files" (v1.8.8, via [gamesWithMatches]).
+ * Indexed the same way as the file pairing: all magnets are
  * matched once through the token index, then grouped by game.
  */
 fun pairGamesWithMagnets(

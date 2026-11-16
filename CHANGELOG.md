@@ -1,5 +1,125 @@
 # Changelog
 
+## v1.8.8 — 2026-11-16
+
+Garrett's v1.8.7 video, four reports in one round: the status-bar
+icons, the Guitar Hero / F-Zero false positives, the double magnet
+indicator on posters, and magnets in "Has files".
+
+**Status-bar icons (Garrett's video).** The time and battery were
+invisible — black icons on the black background. Root cause: the
+theme is fixed dark (#0B0B0D, no light theme) on every device, but
+MainActivity called bare `enableEdgeToEdge()`, whose
+`SystemBarStyle.auto` follows the SYSTEM theme — on a light-system
+device the icons are dark on the app's black background. Both bars
+are now pinned to `SystemBarStyle.dark(Color.TRANSPARENT)`, always:
+light icons on the dark theme. Not JVM-testable — device retest:
+time/battery visible in light icons.
+
+**Matcher: a single shared word no longer matches (the similarity
+guard, corrected).** "DJ Hero (USA).zip", "Super Hero" and "World
+Hero" matched the Guitar Hero Series Xbox 360 port, and "F-Zero"
+matched Metroid Zero Mission: each file's title reduces to one
+significant word ("hero", "zero") shared with the game title, so
+the symmetric overlap coefficient is 1.0 (1/1) and a hint hits.
+Both the ARCHIVE_PROVISIONAL similarity leg and the NAME_ONLY gate
+now also require the guard: shared title words >= 2, OR the game's
+title words are all in the file's title words, OR the file's words
+are the game's minus only the port's platform word ("SimCity" vs
+"SimCity SNES" on the SNES port). The game-⊆-file leg is what saves
+the single-word games — SM64 ["mario"] ⊆ ["mario"], SoH ["ocarina"]
+⊆ ["ocarina", "master", "quest"] (the OoT Master Quest magnet),
+GoldenEye ["goldeneye"] ⊆ ["goldeneye", "007"] — while DJ Hero
+["hero"] vs ["guitar", "hero", "series"] is a proper subset that
+is none of the three legs, so it is blocked. A literal "shared
+>= 2 OR >= 1 DISTINCTIVE hint" bar was swept and rejected: it
+FAILS to block DJ Hero ("hero" IS distinctive — only the Guitar
+Hero Series port has it in its hint set) and it BREAKS Super Mario
+64's own archive ("mario" is shared, not distinctive, and the
+distinctive hint "ghostship" is not in the file), so there is no
+distinctive-hint leg in the guard. NAME_ONLY keeps its
+distinctive-hint / two-hint requirement unchanged: it is essential
+for Pokopia (the .nup matches ONLY through the distinctive hint
+"pokopia"); the guard is an additional precondition on the
+similarity gate, not a replacement.
+
+Correction to the first v1.8.8 guard, stated plainly: that guard
+(shared >= 2 OR the file's words exactly the game's words, on the
+ARCHIVE_PROVISIONAL leg only) had two defects, both proven by its
+own sweep. (1) It did not fix Guitar Hero at all: the live Guitar
+Hero Series port lists NO file formats in the catalog (its only
+asset is a manual disc asset with no accepted formats and no
+zip_ok), so its DJ Hero / Super Hero / World Hero magnets arrive
+through the NAME_ONLY path, which that guard did not touch — and
+its unit-test fixture wrongly gave the port .xex + archiveOk=true,
+so the tests passed while live behavior was unchanged. The guard
+now covers NAME_ONLY too, and the fixture matches the live port.
+(2) Its exact-title leg lost three true positives: "GoldenEye 007
+(USA).zip" from the GoldenEye (N64) port (which lost all 10 of its
+old links), "SimCity (USA).zip" from SimCity SNES, and the OoT
+Master Quest magnet from Ship of Harkinian. All three are kept by
+the corrected guard (legs (b) and (c) above).
+
+Swept over the Recompa catalog (536 ports) x the OLD remote.json
+(26,710 entries — the snapshot that still contains Super Hero and
+World Hero, so the matcher blocking is verified independently of
+the adapter's region filter): 3,649 matches under v1.8.7, 3,252
+under v1.8.8 — 397 magnet pairs removed, all of them the
+single-shared-word class (every removed pair is a one-word file
+title sharing one word with a multi-word game title; zero removed
+pairs share two words or contain the game's title), no
+downloadable-file pair lost, zero new matches added. The DJ Hero
+magnets are gone from Guitar Hero Series (DJ Hero, DJ Hero 2 in
+six variants, Super Hero, World Hero — 9 pairs), and the F-Zero
+magnets are gone from Metroid Zero Mission (F-Zero, GP Legend, GX,
+X; Maximum Velocity never matched — similarity 0.33). The Guitar
+Hero Series page now has only genuine Guitar Hero files: Guitar
+Hero (USA), Guitar Hero 5 (two variants), Guitar Hero II. The
+listed true positives are all kept (Eidos → Pokemon Black, Pokopia
+→ .nup, SoH → OoT .z64 and the Master Quest magnet, PokePark Wii
+USA magnet, 007 → the 007 Xbox game with its 3 magnets,
+.hack//versus still 0 magnets, "Super Mario 64 (USA).zip" still
+matches the SM64 N64 port, "Super Mario 64 DS" still matches it
+too — and only it, down from 7 Mario ports, GoldenEye 007 (USA)
+still matches project-midas and only it — not the goldeneye-recomp
+port — SimCity (USA) still matches urbanrecomp). Nineteen games
+lose all their old links, but none of them has its own file in the
+feed at all — their old links were only other games sharing one
+word (Master of Darkness lost only "Darkness, The" / "Darkness II"
+magnets; Doraemon 3 only "SOS"). Two kept pairs are known
+pre-existing false positives, unchanged from v1.8.7, not
+regressions: "Mario & Luigi" vs Super Mario 64 (the game's words
+["mario"] are in the file's) and "Guitar Hero – Smash Hits" vs
+Super Smash Bros. (the game's words ["smash"] are in the file's);
+the same containment keeps the GoldenEye "Rogue Agent" /
+"Reloaded" and "SimCity DS" magnets on their ports, as under
+v1.8.7.
+
+**Poster: exactly one magnet indicator (Garrett's video).**
+"**I only need one indicator of the magnet link.**" The v1.8.6
+design showed BOTH a "Magnet matched" status AND a "json · Magnet"
+chip. The status is install state only now — "Ready to play" /
+"Installed" / "Not installed" — and the source chip
+(`posterSourceLabel`, unchanged) is the one indicator. A
+magnet-only game reads "Not installed" (or "Installed") with the
+"json · Magnet" chip; a magnet is a link to get the file, not the
+file itself, so it never reads "Ready to play".
+
+**"Has files": magnets count now (Garrett's video, reversed
+policy).** "**If it has a linked file, it should pop up under this
+has files page, which some of them the magnets count as has
+files.**" This supersedes the v1.8.3 rule ("magnets never in Has
+files"). The set is now the union of the file-pairing map's keys
+and the magnet-pairing map's keys (`gamesWithMatches`, in
+GameLibrary.kt), taken at both sites that derive it (cache load and
+the background-refresh save). "Your files" on the game page is
+unchanged — magnets stay in their own Magnet links section there —
+and the magnet copy action is unchanged.
+
+Matcher rules other than the Task 1 guard, the game-centric
+grouping, the star ranking, the pairing cache semantics, and the
+(En) handling are unchanged.
+
 ## v1.8.7 — 2026-11-16
 
 Performance audit (all 12 items) + the caching fix Garrett filmed

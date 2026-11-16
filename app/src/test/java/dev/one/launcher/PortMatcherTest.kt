@@ -213,6 +213,132 @@ class PortMatcherTest {
         requiredDump = "Your own Super Mario 64 ROM."
     )
 
+    // ---- ARCHIVE_PROVISIONAL similarity guard (v1.8.8, corrected) ----
+    //
+    // Fixtures mirroring the live catalog ports. Guitar Hero Series
+    // (prj-gd-engine, Xbox 360): the live asset is a manual disc
+    // asset with no accepted formats and no zip_ok, so the LIVE port
+    // (guitarHeroSeriesLive: no file extensions, archiveOk false)
+    // matches by NAME_ONLY — DJ Hero / Super Hero / World Hero
+    // match it that way, NOT via ARCHIVE_PROVISIONAL, which is why
+    // the first v1.8.8 guard (archive-only) did not fix Guitar Hero
+    // at all. The archive-shape fixture (guitarHeroSeriesArchive:
+    // .xex + archiveOk) is kept alongside it so the guard's
+    // ARCHIVE_PROVISIONAL leg is still exercised — the genuine
+    // Guitar Hero archives pass it there.
+    private val guitarHeroSeriesLive = Port(
+        id = "prj-gd-engine",
+        title = "Guitar Hero Series",
+        game = "Guitar Hero Series",
+        system = "Xbox 360",
+        type = "Recompilation",
+        repo = "example/prj-gd-engine",
+        releasesUrl = "",
+        packageNames = emptyList(),
+        fileExtensions = emptyList(),
+        fileNameHints = listOf("guitar", "hero", "series", "prj-gd-engine"),
+        distinctiveNameHints = listOf("guitar", "hero", "series", "prj-gd-engine"),
+        platformId = "xbox360",
+        archiveOk = false,
+        requiredDump = "Your own Guitar Hero discs."
+    )
+
+    private val guitarHeroSeriesArchive = Port(
+        id = "prj-gd-engine",
+        title = "Guitar Hero Series",
+        game = "Guitar Hero Series",
+        system = "Xbox 360",
+        type = "Recompilation",
+        repo = "example/prj-gd-engine",
+        releasesUrl = "",
+        packageNames = emptyList(),
+        fileExtensions = listOf(".xex"),
+        fileNameHints = listOf("guitar", "hero", "series", "prj-gd-engine"),
+        platformId = "xbox360",
+        archiveOk = true,
+        requiredDump = "Your own Guitar Hero discs."
+    )
+
+    private val metroidZeroMission = Port(
+        id = "metroid-zm-recomp",
+        title = "Metroid Zero Mission",
+        game = "Metroid Zero Mission",
+        system = "Game Boy Advance",
+        type = "Recompilation",
+        repo = "example/metroid-zm-recomp",
+        releasesUrl = "",
+        packageNames = emptyList(),
+        fileExtensions = listOf(".gba"),
+        fileNameHints = listOf("metroid", "zero", "mission", "metroid-zm-recomp"),
+        platformId = "gba",
+        archiveOk = true,
+        requiredDump = "Your own Metroid: Zero Mission ROM."
+    )
+
+    // GoldenEye (N64) ROM port (project-midas, live shape): game
+    // "GoldenEye (N64)" — the "(N64)" is a paren group, so the
+    // title words are just ["goldeneye"]. Asset accepted [{z64}],
+    // zip_ok true.
+    private val goldenEyeN64 = Port(
+        id = "project-midas",
+        title = "GoldenEye (N64)",
+        game = "GoldenEye (N64)",
+        system = "Nintendo 64",
+        type = "Recompilation",
+        repo = "example/project-midas",
+        releasesUrl = "",
+        packageNames = emptyList(),
+        fileExtensions = listOf(".z64"),
+        fileNameHints = listOf("goldeneye", "project-midas"),
+        distinctiveNameHints = listOf("project-midas"),
+        platformId = "n64",
+        archiveOk = true,
+        requiredDump = "Your own GoldenEye 007 ROM."
+    )
+
+    // GoldenEye 007 recomp port (goldeneye-recomp, live shape): a
+    // NAME_ONLY port (manual asset, no accepted formats). The
+    // "GoldenEye 007 (USA).zip" file must NOT match it — its
+    // distinctive hint "goldeneye-recomp" does not hit, and only
+    // "goldeneye" of its hints hits — so the file matches ONLY via
+    // project-midas above.
+    private val goldenEye007Recomp = Port(
+        id = "goldeneye-recomp",
+        title = "GoldenEye 007",
+        game = "GoldenEye 007",
+        system = "Nintendo 64",
+        type = "Recompilation",
+        repo = "example/goldeneye-recomp",
+        releasesUrl = "",
+        packageNames = emptyList(),
+        fileExtensions = emptyList(),
+        fileNameHints = listOf("goldeneye", "007", "goldeneye-recomp"),
+        distinctiveNameHints = listOf("goldeneye-recomp"),
+        platformId = "n64",
+        archiveOk = false,
+        requiredDump = "Your own GoldenEye 007 game files."
+    )
+
+    // SimCity SNES (urbanrecomp, live shape): game "SimCity SNES",
+    // title words ["simcity", "snes"]. Asset accepted [{sfc}],
+    // zip_ok true.
+    private val simCitySnes = Port(
+        id = "urbanrecomp",
+        title = "SimCity SNES",
+        game = "SimCity SNES",
+        system = "Super Nintendo",
+        type = "Recompilation",
+        repo = "example/urbanrecomp",
+        releasesUrl = "",
+        packageNames = emptyList(),
+        fileExtensions = listOf(".sfc"),
+        fileNameHints = listOf("simcity", "snes", "urbanrecomp"),
+        distinctiveNameHints = listOf("simcity", "snes", "urbanrecomp"),
+        platformId = "snes",
+        archiveOk = true,
+        requiredDump = "Your own SimCity ROM."
+    )
+
     // ---- Name-only matching for format-less ports (v1.4.1) ----
 
     // Mirrors the real catalog entry (id banananative-compilationfix):
@@ -802,6 +928,203 @@ class PortMatcherTest {
                 ),
                 starFox64
             )
+        )
+    }
+
+    // ---- ARCHIVE_PROVISIONAL similarity guard (v1.8.8) ----
+
+    @Test
+    fun archiveProvisionalSingleWordTitleNoLongerMatches() {
+        // Garrett's v1.8.7 video: DJ Hero, Super Hero and World Hero
+        // all matched the Guitar Hero Series Xbox 360 port, and
+        // F-Zero matched Metroid Zero Mission. Each file's title
+        // reduces to ONE significant word ("hero", "zero") shared
+        // with the game title, so the overlap coefficient is 1.0
+        // (1/1) — similarity alone cannot tell it from a file named
+        // after the game. The guard blocks them: shared 1 < 2, the
+        // game's words are not all in the file's, and the file's
+        // words are the game's minus words that are not the
+        // platform id. Each must be gone for BOTH magnets and
+        // downloadable files — the matcher rule is the same for
+        // both. The Guitar Hero cases run against the LIVE-shape
+        // port (no formats, archiveOk false): they arrive through
+        // NAME_ONLY, which the first v1.8.8 guard did not touch —
+        // that is the defect this correction fixes. The same three
+        // names are also blocked on the archive-shape fixture, so
+        // the guard's ARCHIVE_PROVISIONAL leg is covered too.
+        val magnetUri = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567" +
+            "&dn=Test&tr=udp://tracker.example.com:1337/announce"
+        for (name in listOf(
+            "DJ Hero (USA).zip",
+            "Super Hero (China) (En) (Pirate).zip",
+            "World Hero (Asia) (En) (Pirate).zip"
+        )) {
+            assertNull(PortMatcher.matchKind(name, guitarHeroSeriesLive))
+            assertNull(
+                PortMatcher.matchKind(
+                    name, guitarHeroSeriesLive,
+                    "https://example.com/${name.lowercase().replace(' ', '-')}"
+                )
+            )
+            assertNull(
+                PortMatcher.matchMagnetKind(
+                    RemoteEntry(
+                        name = name,
+                        url = magnetUri, isFolder = false, kind = "magnet"
+                    ),
+                    guitarHeroSeriesLive
+                )
+            )
+            assertNull(PortMatcher.matchKind(name, guitarHeroSeriesArchive))
+            assertNull(
+                PortMatcher.matchMagnetKind(
+                    RemoteEntry(
+                        name = name,
+                        url = magnetUri, isFolder = false, kind = "magnet"
+                    ),
+                    guitarHeroSeriesArchive
+                )
+            )
+        }
+        for (name in listOf(
+            "F-Zero (USA).zip",
+            "F-Zero - GP Legend (USA).zip",
+            "F-Zero - Maximum Velocity (USA, Europe).zip",
+            "F-Zero GX (USA).zip",
+            "F-Zero X (USA).zip"
+        )) {
+            assertNull(PortMatcher.matchKind(name, metroidZeroMission))
+            assertNull(
+                PortMatcher.matchMagnetKind(
+                    RemoteEntry(
+                        name = name,
+                        url = magnetUri, isFolder = false, kind = "magnet"
+                    ),
+                    metroidZeroMission
+                )
+            )
+        }
+        // "F-Zero - Maximum Velocity" never matched even before the
+        // guard (three significant words, similarity 0.33) — it stays
+        // blocked, and the v1.8.4 cases stay blocked too.
+        assertNull(PortMatcher.matchKind("007 - Agent Under Fire (USA).zip", fireEmblem))
+        assertNull(PortMatcher.matchKind("100 Man Yen Quiz Hunter.zip", megaMan64))
+        assertNull(PortMatcher.matchKind("10101 - Will the Starship.zip", starFox64))
+    }
+
+    @Test
+    fun archiveProvisionalGenuineGuitarHeroFilesStillMatch() {
+        // The real Guitar Hero files share TWO words with the game
+        // title ("guitar" + "hero"), so they pass the guard — via the
+        // two-hints leg on the archive-shape port, and via NAME_ONLY
+        // (leg (a), shared 2) on the live-shape port.
+        assertEquals(
+            MatchKind.ARCHIVE_PROVISIONAL,
+            PortMatcher.matchKind("Guitar Hero (USA).zip", guitarHeroSeriesArchive)
+        )
+        assertEquals(
+            MatchKind.NAME_ONLY,
+            PortMatcher.matchKind("Guitar Hero (USA).zip", guitarHeroSeriesLive)
+        )
+        assertEquals(
+            MatchKind.ARCHIVE_PROVISIONAL,
+            PortMatcher.matchKind(
+                "Guitar Hero - Aerosmith (USA) (En,Fr).zip", guitarHeroSeriesArchive
+            )
+        )
+        // The live-shape port never matched Aerosmith, before or
+        // after the guard: its title similarity is 2/3 = 0.667, below
+        // the pre-existing v1.8.0 0.90 gate — that is the similarity
+        // gate, not the guard, and it is unchanged here.
+        assertNull(
+            PortMatcher.matchKind(
+                "Guitar Hero - Aerosmith (USA) (En,Fr).zip", guitarHeroSeriesLive
+            )
+        )
+        // And the game-⊆-file leg keeps the single-word games: the
+        // file's words contain the game's words (covered for SM64 by
+        // archiveProvisionalCanonicalArchivesStillMatch; asserted
+        // here for the guard's own leg).
+        assertEquals(
+            MatchKind.ARCHIVE_PROVISIONAL,
+            PortMatcher.matchKind("Super Mario 64 (USA).zip", mario64)
+        )
+    }
+
+    @Test
+    fun correctedGuardKeepsGoldenEye007SimCityAndMasterQuest() {
+        // The first v1.8.8 guard's exact-title leg lost these three
+        // true positives (sweep: ARCHIVE_PROVISIONAL → None). The
+        // corrected guard keeps them all, each on a different leg.
+        val magnetUri = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567" +
+            "&dn=Test&tr=udp://tracker.example.com:1337/announce"
+        fun magnet(name: String) =
+            RemoteEntry(name, magnetUri, isFolder = false, kind = "magnet")
+        // GoldenEye 007 (USA).zip vs project-midas, leg (b): the
+        // game's title words ["goldeneye"] are all in the file's
+        // ["goldeneye", "007"] — as a file and as a magnet.
+        assertEquals(
+            MatchKind.ARCHIVE_PROVISIONAL,
+            PortMatcher.matchKind("GoldenEye 007 (USA).zip", goldenEyeN64)
+        )
+        assertEquals(
+            MatchKind.ARCHIVE_PROVISIONAL,
+            PortMatcher.matchMagnetKind(magnet("GoldenEye 007 (USA).zip"), goldenEyeN64)
+        )
+        assertEquals(
+            MatchKind.ARCHIVE_PROVISIONAL,
+            PortMatcher.matchKind("GoldenEye 007 (USA) (En,Fr).zip", goldenEyeN64)
+        )
+        // ...and it matches ONLY via project-midas: the
+        // goldeneye-recomp NAME_ONLY port must not match it (its
+        // distinctive hint "goldeneye-recomp" does not hit, and only
+        // "goldeneye" of its hints hits — fewer than the two long
+        // hints NAME_ONLY requires).
+        assertNull(PortMatcher.matchKind("GoldenEye 007 (USA).zip", goldenEye007Recomp))
+        assertNull(
+            PortMatcher.matchMagnetKind(
+                magnet("GoldenEye 007 (USA).zip"), goldenEye007Recomp
+            )
+        )
+        // SimCity (USA).zip vs urbanrecomp, leg (c): the file's
+        // words ["simcity"] are the game's ["simcity", "snes"]
+        // minus only the platform word "snes".
+        assertEquals(
+            MatchKind.ARCHIVE_PROVISIONAL,
+            PortMatcher.matchKind("SimCity (USA).zip", simCitySnes)
+        )
+        assertEquals(
+            MatchKind.ARCHIVE_PROVISIONAL,
+            PortMatcher.matchMagnetKind(magnet("SimCity (USA).zip"), simCitySnes)
+        )
+        assertEquals(
+            MatchKind.ARCHIVE_PROVISIONAL,
+            PortMatcher.matchKind("SimCity (USA) (Proto).zip", simCitySnes)
+        )
+        // The OoT Master Quest magnet vs SoH, leg (b): the game's
+        // title words ["ocarina"] are all in the file's
+        // ["ocarina", "master", "quest"]. Exact magnet name from
+        // the v1.8.8 sweep diff.
+        assertEquals(
+            MatchKind.ARCHIVE_PROVISIONAL,
+            PortMatcher.matchMagnetKind(
+                magnet("Legend of Zelda, The - Ocarina of Time & Master Quest (USA).zip"),
+                oot
+            )
+        )
+    }
+
+    @Test
+    fun marioAndLuigiStillMatchesSm64AsKnownAccepted() {
+        // KNOWN ACCEPTED, not a regression: "Mario & Luigi" matched
+        // Super Mario 64 under v1.8.7 too, and the corrected guard
+        // keeps it — the game's title words ["mario"] are all in
+        // the file's ["mario", "luigi"] (leg (b)). The sweep keeps
+        // it for the same reason; it is a pre-existing single-word
+        // containment, not a new false positive.
+        assertEquals(
+            MatchKind.ARCHIVE_PROVISIONAL,
+            PortMatcher.matchKind("Mario & Luigi (USA) (Demo) (Kiosk, E3 2003).zip", mario64)
         )
     }
 
