@@ -9,6 +9,9 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 
 val Context.localFolderDataStore: DataStore<Preferences> by preferencesDataStore(
@@ -28,6 +31,11 @@ data class LocalFolder(val uri: String, val displayName: String)
  */
 class LocalFolderStore(private val context: Context) {
     private val json = Json { ignoreUnknownKeys = true }
+
+    // Explicit serializer: the reified encodeToString/decodeFromString
+    // overloads do not resolve for a Map value here.
+    private val detectedSerializer =
+        MapSerializer(String.serializer(), ListSerializer(DetectedFile.serializer()))
 
     private val folderUriKey = stringPreferencesKey("folder_uri")
     private val folderNameKey = stringPreferencesKey("folder_name")
@@ -63,7 +71,7 @@ class LocalFolderStore(private val context: Context) {
 
     suspend fun saveDetected(detected: Map<String, List<DetectedFile>>) {
         context.localFolderDataStore.edit { prefs ->
-            prefs[detectedJsonKey] = json.encodeToString(detected)
+            prefs[detectedJsonKey] = json.encodeToString(detectedSerializer, detected)
         }
     }
 
@@ -76,7 +84,7 @@ class LocalFolderStore(private val context: Context) {
     private fun decodeDetected(raw: String?): Map<String, List<DetectedFile>> {
         if (raw.isNullOrBlank()) return emptyMap()
         return try {
-            json.decodeFromString<Map<String, List<DetectedFile>>>(raw)
+            json.decodeFromString(detectedSerializer, raw)
         } catch (e: Exception) {
             emptyMap()
         }
