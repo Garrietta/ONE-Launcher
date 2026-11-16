@@ -43,27 +43,39 @@ Parsing (per the site's own layout):
      preceding <h2>/<h3> heading, falling back to the sidebar category
      name), deduplicated by URL, and sorted by name.
 
-Minerva magnet crawling (v1.8.0, --minerva): the Minerva browse
-page already carries the magnets. Each <div class="entry"> on a
-browse page holds the name (a <strong> inside the first <a>), a
-<span> with the size, and a magnet button whose onclick is
-downloadMagnet('magnet:?xt=urn:btih:<hash>&dn=Minerva_Myrient').
-The dn is the same generic string for every entry, so the real name
-comes from the entry, and each entry has its own infohash — one
-magnet per entry. The adapter rebuilds the magnet with the real
-name as dn plus the three trackers and emits one record per entry:
-{name, url: <full magnet URI>, kind: "magnet", category, size?}.
-A folder page gives one magnet per system; a system page gives one
-magnet per game. The root browse page (/browse/) recurses one level
-into its Redump and No-Intro subfolders and emits their systems.
---minerva is a single Minerva browse URL (or "all" for the root);
-the page URL itself selects the scope. A magnet entry is marked
-"kind": "magnet" so the app can tell it apart from a direct
-download; the app only ever COPIES the magnet link, never downloads
-or resolves it. Without --minerva the adapter is r-roms only,
-exactly as before. (The CDN .torrent approach is dead:
-https://cdn.minerva-archive.org/torrents/ 404s — verified
-2026-11-16. No bencodepy, no .torrent decoding.)
+Minerva magnet crawling (v1.8.0, --minerva; per-game recursion
+added after v1.8.0): the Minerva browse page already carries the
+magnets. Each <div class="entry"> on a browse page holds the name
+(the first <a>'s text — a <strong> on folder pages, the game name
+on system pages), a <span> with the size, and a magnet button whose
+onclick is downloadMagnet('magnet:?xt=urn:btih:<hash>&dn=
+Minerva_Myrient'). The dn is the same generic string for every
+entry, so the real name comes from the entry. One torrent per
+system: every game on a system page shares that system's infohash,
+and each game's magnet button carries a data-m index — the file's
+index inside the system torrent. The adapter therefore rebuilds
+each game's magnet as the system infohash, the real game name as
+dn, the three trackers, plus &so=<data-m> (BitTorrent BEP 53 file
+selection), and emits one record per game: {name, url: <full magnet
+URI>, kind: "magnet", category, size?}. The crawl RECURSES into
+subfolders: a folder page's entries are systems (their own
+collection magnets are NOT emitted — only the games inside them),
+and a system page's entries are the games. The root browse page
+(/browse/) recurses into its Redump and No-Intro subfolders.
+Recursion is capped (max depth 5, max 100,000 magnet records, cycle
+guard via visited URLs); exceeding the record cap aborts the run
+rather than writing an unbounded file. A collection split across
+several torrents (e.g. IBM - PC compatible, 28 letter-group
+torrents) is captured by recursing into its subfolder — its letter
+groups each have their own torrent, and their games are emitted
+with &so= against that letter torrent. --minerva is a single
+Minerva browse URL (or "all" for the root); the page URL itself
+selects the scope. A magnet entry is marked "kind": "magnet" so the
+app can tell it apart from a direct download; the app only ever
+COPIES the magnet link, never downloads or resolves it. Without
+--minerva the adapter is r-roms only, exactly as before. (The CDN
+.torrent approach is dead: https://cdn.minerva-archive.org/torrents/
+404s — verified 2026-11-16. No bencodepy, no .torrent decoding.)
 
 Standard library only. Python 3.8+.
 """
@@ -434,27 +446,38 @@ def parse_minerva_size(text):
     return int(value * mult)
 
 
-def build_minerva_magnet(infohash, name):
+def build_minerva_magnet(infohash, name, file_index=None):
     """The full magnet URI for one entry: its own infohash, the real
-    (entry) name as dn, and the three trackers."""
+    (entry) name as dn, and the three trackers. When file_index is
+    given (a game's index inside its system torrent, from the
+    magnet button's data-m), append &so=<index> (BitTorrent BEP 53)
+    so a client selects just that file instead of the whole
+    collection. A collection's own magnet (no single file) omits it."""
     dn = urllib.parse.quote(name, safe="")
     magnet = f"magnet:?xt=urn:btih:{infohash.lower()}&dn={dn}"
     for tracker in TRACKERS:
         magnet += f"&tr={tracker}"
+    if file_index is not None:
+        magnet += f"&so={file_index}"
     return magnet
 
 
 class _MinervaEntryParser(HTMLParser):
     """Parse <div class='entry'> elements from a Minerva browse page.
 
-    Each entry yields a dict with name (the <strong> text, trailing
-    '/' stripped, HTML entities unescaped), href (the first <a>'s
-    browse URL, for the root recursion), size (the <span> text), and
-    hashes (the infohashes from the magnet onclick — usually one;
-    a collection split across several torrents, e.g. IBM - PC
-    compatible, has one per torrent via downloadMagnets([...])).
-    Entries are collected in page order. Only <div> depth is tracked,
-    so void elements inside an entry cannot end it early.
+    Each entry yields a dict with name (the first <a>'s text — a
+    <strong> on folder pages, the game name on system pages; the
+    <div>'s data-name is a fallback when the link text is empty),
+    href (the first <a>'s browse URL, for recursion), size (the
+    <span> text), hashes (the infohashes from the magnet onclick —
+    usually one; a collection split across several torrents, e.g.
+    IBM - PC compatible, has one per torrent via
+    downloadMagnets([...])), and file_index (the magnet button's
+    data-m — a game's index inside its system torrent; only
+    meaningful on a system page, where every game shares the one
+    system infohash). Entries are collected in page order. Only
+    <div> depth is tracked, so void elements inside an entry
+    cannot end it early.
     """
 
     def __init__(self):
@@ -462,8 +485,7 @@ class _MinervaEntryParser(HTMLParser):
         self.entries = []
         self._entry = None
         self._div_depth = 0
-        self._in_strong = False
-        self._name_done = False
+        self._in_name_link = False
         self._in_span = False
 
     def handle_starttag(self, tag, attrs):
@@ -471,16 +493,19 @@ class _MinervaEntryParser(HTMLParser):
         if self._entry is None:
             if tag == "div" and "entry" in attrs.get("class", "").split():
                 self._entry = {"name": "", "href": None,
-                               "size": None, "hashes": []}
+                               "size": None, "hashes": [],
+                               "file_index": None,
+                               "data_name": attrs.get("data-name", "")}
                 self._div_depth = 1
-                self._name_done = False
             return
         if tag == "div":
             self._div_depth += 1
         if tag == "a" and self._entry["href"] is None and attrs.get("href"):
+            # The first link is the name link (subfolder on a folder
+            # page, game on a system page); the magnet button comes
+            # later and must not overwrite it or its text.
             self._entry["href"] = attrs["href"]
-        if tag == "strong" and not self._name_done:
-            self._in_strong = True
+            self._in_name_link = True
         if tag == "span":
             self._in_span = True
         onclick = attrs.get("onclick", "")
@@ -490,28 +515,39 @@ class _MinervaEntryParser(HTMLParser):
             # split across several. The parser already unescaped
             # &amp; to & (convert_charrefs). Only the infohashes
             # matter — the magnet is rebuilt with the real name.
+            # data-m is the file's index inside the torrent (the
+            # per-game selector); it lives on the magnet button.
             self._entry["hashes"].extend(
                 _INFOHASH_RE.findall(onclick)
             )
+            if self._entry["file_index"] is None:
+                raw_index = attrs.get("data-m")
+                if raw_index is not None:
+                    try:
+                        self._entry["file_index"] = int(raw_index)
+                    except ValueError:
+                        pass
 
     def handle_endtag(self, tag):
         if self._entry is None:
             return
-        if tag == "strong":
-            self._in_strong = False
-            self._name_done = True
+        if tag == "a" and self._in_name_link:
+            self._in_name_link = False
         if tag == "span":
             self._in_span = False
         if tag == "div":
             self._div_depth -= 1
             if self._div_depth <= 0:
+                if not self._entry["name"].strip():
+                    # Fall back to the <div>'s data-name slug.
+                    self._entry["name"] = self._entry["data_name"]
                 self.entries.append(self._entry)
                 self._entry = None
 
     def handle_data(self, data):
         if self._entry is None:
             return
-        if self._in_strong:
+        if self._in_name_link:
             self._entry["name"] += data
         elif self._in_span and self._entry["size"] is None:
             text = data.strip()
@@ -519,14 +555,91 @@ class _MinervaEntryParser(HTMLParser):
                 self._entry["size"] = text
 
 
-def minerva_page_records(page_url, category):
-    """One Minerva browse page -> magnet records. Each entry becomes
-    one record {name, url: full magnet URI, kind: 'magnet',
-    category, size?}; a collection split across several torrents
-    becomes one record per torrent, named '<name> (part N of M)'.
-    Entries without a magnet onclick (no infohash) are skipped —
-    there is no magnet to copy. Returns [] when the page cannot be
-    fetched or has no usable entries."""
+# Recursion / size guardrails for the Minerva crawl. A folder page
+# (Redump) recurses into its systems and a system page's games are
+# leaves; the IBM collection nests one level deeper (letter groups),
+# so depth 5 is generous. The record cap keeps a runaway crawl from
+# writing an unbounded file — exceeding it aborts the run instead.
+MINERVA_MAX_DEPTH = 5
+MINERVA_MAX_RECORDS = 100000
+
+
+class _MinervaCapExceeded(Exception):
+    """The Minerva crawl would exceed MINERVA_MAX_RECORDS."""
+
+
+def _minerva_clean_entry_name(name):
+    """An entry name, trimmed, with a trailing '/' (folder pages)
+    stripped."""
+    name = (name or "").strip()
+    if name.endswith("/"):
+        name = name[:-1].strip()
+    return name
+
+
+def _minerva_is_subfolder(entry, page_url):
+    """True when the entry links into another Minerva browse folder:
+    its first link resolves under /browse/ (a system or letter
+    group). Game entries link to /rom?id=... instead, and the
+    magnet button is javascript: — neither is a subfolder. Parent
+    ('..') entries are never subfolders."""
+    name = _minerva_clean_entry_name(entry.get("name"))
+    if name in ("..", ".", ""):
+        return False
+    href = entry.get("href")
+    if not href:
+        return False
+    href = href.strip()
+    if href.lower().startswith("javascript:"):
+        return False
+    resolved = urllib.parse.urljoin(page_url, href)
+    path = urllib.parse.unquote(urllib.parse.urlparse(resolved).path)
+    return "/browse/" in path
+
+
+def _minerva_records_for_entry(entry, category, is_leaf):
+    """One parsed entry -> magnet record(s). A leaf (a game) is one
+    record per infohash — normally one, the system torrent — with
+    &so=<data-m> selecting the game inside it. A collection split
+    across several torrents (downloadMagnets) becomes one record per
+    torrent, named '<name> (part N of M)', with no &so= (each part
+    is its own torrent). Entries without a magnet onclick (no
+    infohash) are skipped — there is no magnet to copy. The <span>
+    size is the whole collection's total; it only belongs on a
+    single-magnet entry, not on one part of a split collection."""
+    name = _minerva_clean_entry_name(entry.get("name"))
+    if not name:
+        return []
+    hashes = entry.get("hashes") or []
+    if not hashes:
+        return []
+    size = parse_minerva_size(entry["size"]) if len(hashes) == 1 else None
+    # &so= only for a single-torrent leaf (a game inside its system
+    # torrent). A multi-torrent entry's parts are separate torrents.
+    file_index = None
+    if is_leaf and len(hashes) == 1:
+        file_index = entry.get("file_index")
+    records = []
+    for idx, infohash in enumerate(hashes):
+        if len(hashes) == 1:
+            rec_name = name
+        else:
+            rec_name = f"{name} (part {idx + 1} of {len(hashes)})"
+        record = {
+            "name": rec_name,
+            "url": build_minerva_magnet(infohash, rec_name, file_index),
+            "kind": "magnet",
+            "category": category,
+        }
+        if size is not None:
+            record["size"] = size
+        records.append(record)
+    return records
+
+
+def _minerva_parse_page(page_url):
+    """One Minerva browse page -> its parsed entries, or [] when
+    the page cannot be fetched or parsed."""
     html = fetch(page_url)
     if html is None:
         return []
@@ -535,34 +648,79 @@ def minerva_page_records(page_url, category):
         parser.feed(html)
     except Exception:
         return []
+    return parser.entries
+
+
+def _minerva_category_for_page(ancestors, fallback):
+    """The category for records on a page: the deepest ancestor
+    folder with a real name (longer than 2 characters). Letter
+    groups ('A', 'B', '_', '0-9') are grouping labels, not
+    systems, so a game under IBM - PC compatible / A is
+    categorised 'IBM - PC compatible', not 'A'."""
+    for name in reversed(ancestors):
+        if len(name) > 2:
+            return name
+    if ancestors:
+        return ancestors[-1]
+    return fallback
+
+
+def _minerva_collect_recursive(page_url, ancestors, depth, state):
+    """Recurse a Minerva browse page into magnet records.
+
+    Folder entries (a /browse/ link) are recursed into — their own
+    collection magnet is NOT emitted — and leaf entries (games) emit
+    their per-game magnet. A subfolder that yields nothing falls
+    back to its own magnet(s) with a warning, so a system is never
+    silently dropped. `ancestors` is the folder-name chain from the
+    requested page down to this page (for the category). `state`
+    holds the visited page URLs (cycle guard) and the running
+    record count (cap guard). Raises _MinervaCapExceeded when the
+    cap would be exceeded."""
+    if depth > MINERVA_MAX_DEPTH:
+        print(f"warning: Minerva depth cap reached at {page_url}; "
+              f"skipping", file=sys.stderr)
+        return []
+    norm_url = urllib.parse.urldefrag(page_url)[0].rstrip("/")
+    if norm_url in state["visited"]:
+        return []
+    state["visited"].add(norm_url)
+    entries = _minerva_parse_page(page_url)
+    category = _minerva_category_for_page(
+        ancestors, _minerva_category_from_url(page_url)
+    )
     records = []
-    for entry in parser.entries:
-        name = (entry["name"] or "").strip()
-        if name.endswith("/"):
-            name = name[:-1].strip()
-        if not name:
+    for entry in entries:
+        name = _minerva_clean_entry_name(entry.get("name"))
+        if name in ("..", ".", ""):
             continue
-        hashes = entry.get("hashes") or []
-        if not hashes:
-            continue
-        # The <span> size is the whole collection's total; it only
-        # belongs on a single-magnet entry, not on one part of a
-        # split collection.
-        size = parse_minerva_size(entry["size"]) if len(hashes) == 1 else None
-        for idx, infohash in enumerate(hashes):
-            if len(hashes) == 1:
-                rec_name = name
+        if _minerva_is_subfolder(entry, page_url):
+            sub_url = urllib.parse.urljoin(page_url, entry["href"])
+            sub_url = sub_url.replace("/./", "/")
+            sub = _minerva_collect_recursive(
+                sub_url, ancestors + [name], depth + 1, state
+            )
+            if sub:
+                records.extend(sub)
             else:
-                rec_name = f"{name} (part {idx + 1} of {len(hashes)})"
-            record = {
-                "name": rec_name,
-                "url": build_minerva_magnet(infohash, rec_name),
-                "kind": "magnet",
-                "category": category,
-            }
-            if size is not None:
-                record["size"] = size
-            records.append(record)
+                # The subfolder gave nothing (unreachable or empty):
+                # fall back to this entry's own magnet(s) so the
+                # system is not silently dropped, and say so loudly.
+                print(f"warning: Minerva subfolder {sub_url} yielded "
+                      f"no records; using {name}'s own magnet(s)",
+                      file=sys.stderr)
+                batch = _minerva_records_for_entry(entry, category, False)
+                records.extend(batch)
+                state["count"] += len(batch)
+        else:
+            batch = _minerva_records_for_entry(entry, category, True)
+            records.extend(batch)
+            state["count"] += len(batch)
+        if state["count"] > MINERVA_MAX_RECORDS:
+            raise _MinervaCapExceeded(
+                f"Minerva crawl would exceed {MINERVA_MAX_RECORDS} "
+                f"records (at {page_url})"
+            )
     return records
 
 
@@ -597,12 +755,16 @@ def _minerva_category_from_url(page_url):
 
 def collect_minerva_records(minerva_arg):
     """Minerva magnet records for --minerva (a single browse URL, or
-    'all' for the root). The root browse page (/browse/) recurses one
-    level into its Redump and No-Intro subfolders and emits their
-    systems; a folder or system page emits that page's entries
-    directly. Returns [] when Minerva is not requested or a page
-    cannot be reached. A fetch failure warns and skips, never fails
-    the whole run."""
+    'all' for the root). Recurses into subfolders: a folder page's
+    entries are systems (their own collection magnets are NOT
+    emitted — only the games inside them), and a system page's
+    entries are the games, each with its own per-game magnet
+    (system infohash + &so=<data-m>). The root browse page
+    (/browse/) recurses into its Redump and No-Intro subfolders.
+    Returns [] when Minerva is not requested or a page cannot be
+    reached. A fetch failure warns and skips, never fails the whole
+    run. Raises _MinervaCapExceeded when the crawl would exceed
+    MINERVA_MAX_RECORDS."""
     if not minerva_arg:
         return []
     arg = minerva_arg.strip()
@@ -612,39 +774,32 @@ def collect_minerva_records(minerva_arg):
         print(f"warning: --minerva is not a URL, skipping Minerva: {arg}",
               file=sys.stderr)
         return []
+    state = {"visited": set(), "count": 0}
     if _minerva_is_root(arg):
-        # The root page lists the top-level collections; recurse one
-        # level into the game-system groups and emit their systems.
-        html = fetch(arg)
-        if html is None:
-            print("warning: Minerva root page unreachable; skipping "
-                  "Minerva", file=sys.stderr)
-            return []
-        parser = _MinervaEntryParser()
-        try:
-            parser.feed(html)
-        except Exception:
-            return []
+        # The root page lists the top-level collections; recurse
+        # into the game-system groups (Redump, No-Intro) and emit
+        # the games inside their systems.
+        entries = _minerva_parse_page(arg)
         records = []
-        for entry in parser.entries:
-            name = (entry["name"] or "").strip()
-            if name.endswith("/"):
-                name = name[:-1].strip()
+        for entry in entries:
+            name = _minerva_clean_entry_name(entry.get("name"))
             if name.lower() not in ROOT_SYSTEM_GROUPS:
                 continue
-            href = entry["href"]
+            href = entry.get("href")
             if not href:
                 continue
             sub_url = urllib.parse.urljoin(arg, href).replace("/./", "/")
-            sub = minerva_page_records(sub_url, name)
+            sub = _minerva_collect_recursive(
+                sub_url, [name], 1, state
+            )
             print(f"  Minerva {name}: {len(sub)} record(s)",
                   file=sys.stderr)
             records.extend(sub)
         print(f"Minerva: {len(records)} record(s) from the root "
               f"browse page", file=sys.stderr)
         return records
-    category = _minerva_category_from_url(arg)
-    records = minerva_page_records(arg, category)
+    ancestors = [_minerva_category_from_url(arg)]
+    records = _minerva_collect_recursive(arg, ancestors, 0, state)
     print(f"Minerva: {len(records)} record(s) from {arg}",
           file=sys.stderr)
     return records
@@ -706,12 +861,20 @@ def main(argv=None):
         print(f"  {url}: {len(page_records)} record(s)", file=sys.stderr)
         records.extend(page_records)
 
-    # Minerva magnet records, if requested: one entry per entry on
-    # the browse page, each carrying its full magnet URI. The r-roms
-    # records above are untouched by this step.
+    # Minerva magnet records, if requested: one per game inside the
+    # requested folder's subfolders, each carrying its full magnet
+    # URI (system infohash + &so=<data-m>). The r-roms records above
+    # are untouched by this step. A crawl that would exceed the
+    # record cap aborts the run without writing anything, so a
+    # stale remote.json stays live instead of a truncated one.
     minerva_records = []
     if minerva_arg:
-        minerva_records = collect_minerva_records(minerva_arg)
+        try:
+            minerva_records = collect_minerva_records(minerva_arg)
+        except _MinervaCapExceeded as exc:
+            print(f"error: {exc}; not writing {args.output}",
+                  file=sys.stderr)
+            return 1
         records.extend(minerva_records)
 
     # Deduplicate by URL (first occurrence wins), then sort by name.
