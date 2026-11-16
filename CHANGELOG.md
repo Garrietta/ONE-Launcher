@@ -1,5 +1,33 @@
 # Changelog
 
+## v1.4.0 — 2026-11-16
+
+An isolated, generic remote directory browser ("Remote folders" in
+Settings), kept deliberately separate from the Library: it browses a
+user-configured server, it never merges into the port search, and it
+writes no new matching logic.
+
+- Remote folders: add a source with a name + URL and optional HTTP
+  Basic auth (username/password). Sources live on-device only
+  (DataStore; credentials in EncryptedSharedPreferences), nothing is
+  prefilled, and a source can be removed. Tapping a source opens its
+  own browser screen with subfolder navigation and breadcrumbs.
+- Two server shapes only: standard HTTP directory listings (Apache
+  mod_autoindex / nginx autoindex) and a plain JSON file list (an array
+  of {name, url}). Anything else — a hierarchical catalog feed, a flat
+  items[] feed, a page that is not a listing — gets a plain error
+  ("Couldn't read this folder…") instead of being parsed.
+- Downloads go through the system DownloadManager with progress, then
+  move into the configured local game-files folder when one is set
+  (DownloadManager cannot write into a SAF tree directly, so the move
+  is the step that puts the file there); without a local folder the
+  file stays in Downloads/ONE. Once on disk, the existing local-folder
+  prescan pairs the file with its port — no port matching was added
+  for remote items.
+- Custom links are untouched and stay browser-only. The local folder
+  picker now also persists the write grant, so remote downloads can be
+  moved into the folder.
+
 ## v1.3.1 — 2026-11-16
 
 Device feedback on v1.3.0 (folded Fold 8): the Library filter ate half the

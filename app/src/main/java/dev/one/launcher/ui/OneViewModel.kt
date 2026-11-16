@@ -1,10 +1,14 @@
 package dev.one.launcher.ui
 
 import android.app.Application
+import android.app.DownloadManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Environment
 import android.provider.Settings
 import androidx.core.content.FileProvider
+import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -36,11 +40,18 @@ import dev.one.launcher.data.RecompaCatalogApi
 import dev.one.launcher.data.RecompaIndex
 import dev.one.launcher.data.RecompaPlatform
 import dev.one.launcher.data.ReleaseResult
+import dev.one.launcher.data.RemoteDirectoryApi
+import dev.one.launcher.data.RemoteEntry
+import dev.one.launcher.data.RemoteFolderCredentials
+import dev.one.launcher.data.RemoteFolderSource
+import dev.one.launcher.data.RemoteFoldersStore
+import dev.one.launcher.data.RemoteListingResult
 import dev.one.launcher.data.SecureKeyStore
 import dev.one.launcher.data.compareVersions
 import dev.one.launcher.data.mapCatalogPort
 import dev.one.launcher.data.mergeCatalogs
 import dev.one.launcher.data.normalizeCustomLinkUrl
+import dev.one.launcher.data.normalizeRemoteFolderUrl
 import dev.one.launcher.data.pickApkAsset
 import dev.one.launcher.data.resolveDetected
 import dev.one.launcher.data.sha256Matches
@@ -48,13 +59,16 @@ import dev.one.launcher.model.Port
 import dev.one.launcher.model.PortCatalog
 import dev.one.launcher.model.PortFork
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.Credentials
 import java.io.File
+import java.net.URLConnection
 
 data class PortStatus(
     val installedPackage: String? = null,
@@ -130,6 +144,22 @@ sealed class CatalogState {
         val portsWithoutFileInfo: List<String>
     ) : CatalogState()
     data class Unavailable(val message: String) : CatalogState()
+}
+
+/** One step in the open remote-folder browser: a folder URL + display name. */
+data class RemoteTrailItem(val url: String, val name: String)
+
+/**
+ * The open remote-folder browser's state. Isolated from the Library by
+ * design: remote entries are never merged into the port list, its
+ * search, or any port matching. A downloaded file only becomes visible
+ * to the app once it lands on disk, through the local-folder scan.
+ */
+sealed class RemoteBrowserState {
+    data object Idle : RemoteBrowserState()
+    data object Loading : RemoteBrowserState()
+    data class Loaded(val entries: List<RemoteEntry>, val trail: List<RemoteTrailItem>) : RemoteBrowserState()
+    data class Error(val message: String) : RemoteBrowserState()
 }
 
 class OneViewModel(application: Application) : AndroidViewModel(application) {
@@ -301,7 +331,41 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     private val _selectedForks = MutableStateFlow<Map<String, String>>(emptyMap())
     val selectedForks: StateFlow<Map<String, String>> = _selectedForks.asStateFlow()
 
+    /** User-configured remote folder sources (Settings), stored only on this device. */
+    private val _remoteFolders = MutableStateFlow<List<RemoteFolderSource>>(emptyList())
+    val remoteFolders: StateFlow<List<RemoteFolderSource>> = _remoteFolders.asStateFlow()
+
+    /** Validation error from adding a remote folder source, if any. */
+    private val _remoteFolderError = MutableStateFlow<String?>(null)
+    val remoteFolderError: StateFlow<String?> = _remoteFolderError.asStateFlow()
+
+    /** The open remote-folder browser: one source's directory listing. */
+    private val _remoteBrowser = MutableStateFlow<RemoteBrowserState>(RemoteBrowserState.Idle)
+    val remoteBrowser: StateFlow<RemoteBrowserState> = _remoteBrowser.asStateFlow()
+
+    /** Download progress for remote files, keyed by entry URL (0f..1f). */
+    private val _remoteDownloadProgress = MutableStateFlow<Map<String, Float>>(emptyMap())
+    val remoteDownloadProgress: StateFlow<Map<String, Float>> =
+        _remoteDownloadProgress.asStateFlow()
+
+    /** Finished remote downloads: entry URL -> where the file landed. */
+    private val _remoteDownloaded = MutableStateFlow<Map<String, String>>(emptyMap())
+    val remoteDownloaded: StateFlow<Map<String, String>> = _remoteDownloaded.asStateFlow()
+
+    /** Error from the last remote download, if any. */
+    private val _remoteDownloadError = MutableStateFlow<String?>(null)
+    val remoteDownloadError: StateFlow<String?> = _remoteDownloadError.asStateFlow()
+
     private val recompaApi = RecompaCatalogApi(application)
+    private val remoteFoldersStore = RemoteFoldersStore(application)
+    private val remoteCredentials = RemoteFolderCredentials(application)
+    private val remoteDirectoryApi = RemoteDirectoryApi()
+
+    /** The source currently open in the remote browser, if any. */
+    private var remoteSource: RemoteFolderSource? = null
+
+    /** Folder stack for the open remote browser, root first. */
+    private var remoteTrail: List<RemoteTrailItem> = emptyList()
 
     val catalogNote: String
     val ports: List<Port> get() = _ports.value
@@ -326,6 +390,10 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
         // Keep the on-device custom links in state.
         viewModelScope.launch {
             customLinksStore.links.collect { _customLinks.value = it }
+        }
+        // Keep the user-configured remote folder sources in state.
+        viewModelScope.launch {
+            remoteFoldersStore.sources.collect { _remoteFolders.value = it }
         }
         // Restore a saved Premiumize session, if the user linked one before.
         if (secureKeyStore.getApiKey() != null) {
@@ -584,9 +652,12 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setLocalFolder(uri: Uri, displayName: String) {
         try {
+            // Persist read AND write: remote downloads are moved into
+            // this folder after they land, which needs the write grant.
             getApplication<Application>().contentResolver.takePersistableUriPermission(
                 uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
         } catch (e: Exception) {
             // Persisting the permission is best-effort; the scan below
@@ -1132,6 +1203,277 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
 
     fun dismissCustomLinkError() {
         _customLinkError.value = null
+    }
+
+    // ---- Remote folders (Settings; isolated generic directory browser) ----
+
+    /**
+     * Add a user-configured remote folder source. Returns true when it
+     * was accepted. The source is stored on this device only; its
+     * entries are never merged into the Library, its search, or any
+     * port matching — the browser is its own screen.
+     */
+    fun addRemoteFolder(name: String, rawUrl: String, username: String, password: String): Boolean {
+        val cleanName = name.trim()
+        if (cleanName.isEmpty()) {
+            _remoteFolderError.value = "Give the folder a name first."
+            return false
+        }
+        val url = normalizeRemoteFolderUrl(rawUrl)
+        if (url == null) {
+            _remoteFolderError.value =
+                "That URL does not look right. Use an http:// or https:// link."
+            return false
+        }
+        val source = RemoteFolderSource(
+            id = java.util.UUID.randomUUID().toString(),
+            name = cleanName,
+            url = url
+        )
+        _remoteFolderError.value = null
+        viewModelScope.launch {
+            if (username.isNotBlank()) {
+                remoteCredentials.save(source.id, username.trim(), password)
+            }
+            remoteFoldersStore.add(source)
+        }
+        return true
+    }
+
+    fun removeRemoteFolder(source: RemoteFolderSource) {
+        viewModelScope.launch {
+            remoteCredentials.clear(source.id)
+            remoteFoldersStore.remove(source)
+            if (remoteSource?.id == source.id) {
+                remoteSource = null
+                remoteTrail = emptyList()
+                _remoteBrowser.value = RemoteBrowserState.Idle
+            }
+        }
+    }
+
+    fun dismissRemoteFolderError() {
+        _remoteFolderError.value = null
+    }
+
+    /** Open a remote folder source in its own browser screen. */
+    fun openRemoteFolder(sourceId: String) {
+        val source = _remoteFolders.value.firstOrNull { it.id == sourceId } ?: return
+        remoteSource = source
+        remoteTrail = listOf(RemoteTrailItem(source.url, source.name))
+        fetchRemoteUrl(source.url)
+    }
+
+    /** Open a subfolder inside the open remote browser. */
+    fun navigateRemoteEntry(entry: RemoteEntry) {
+        if (!entry.isFolder) return
+        remoteTrail = remoteTrail + RemoteTrailItem(entry.url, entry.name)
+        fetchRemoteUrl(entry.url)
+    }
+
+    /** Jump to a breadcrumb in the open remote browser. */
+    fun navigateRemoteTrail(index: Int) {
+        val target = index.coerceIn(0, remoteTrail.lastIndex)
+        remoteTrail = remoteTrail.take(target + 1)
+        fetchRemoteUrl(remoteTrail[target].url)
+    }
+
+    /**
+     * Back from the browser: pop one folder level. Returns false when
+     * already at the source root, so the caller can leave the screen.
+     */
+    fun navigateRemoteBack(): Boolean {
+        if (remoteTrail.size <= 1) return false
+        remoteTrail = remoteTrail.dropLast(1)
+        fetchRemoteUrl(remoteTrail.last().url)
+        return true
+    }
+
+    /** Re-fetch the folder the browser is showing. */
+    fun refreshRemoteBrowser() {
+        val current = remoteTrail.lastOrNull() ?: return
+        fetchRemoteUrl(current.url)
+    }
+
+    private fun fetchRemoteUrl(url: String) {
+        val source = remoteSource ?: return
+        _remoteBrowser.value = RemoteBrowserState.Loading
+        viewModelScope.launch(Dispatchers.IO) {
+            val creds = remoteCredentials.load(source.id)
+            val result = remoteDirectoryApi.fetch(url, creds?.first, creds?.second)
+            withContext(Dispatchers.Main) {
+                _remoteBrowser.value = when (result) {
+                    is RemoteListingResult.Listing ->
+                        RemoteBrowserState.Loaded(result.entries, remoteTrail)
+                    is RemoteListingResult.Error ->
+                        RemoteBrowserState.Error(result.message)
+                }
+            }
+        }
+    }
+
+    /**
+     * Download a remote file with the system DownloadManager into
+     * Downloads/ONE, then move it into the configured local game-files
+     * folder when one is set (DownloadManager cannot write into a SAF
+     * tree directly, so the move is the step that puts it there). When
+     * the move is not possible the file stays in Downloads/ONE, where
+     * the existing downloaded-file matching already sees it. Either
+     * way refreshLibrary() runs afterwards, so the existing local-folder
+     * prescan pairs the file with its port — no new matching logic.
+     */
+    fun downloadRemoteFile(entry: RemoteEntry) {
+        val source = remoteSource ?: return
+        if (entry.isFolder) return
+        val fileName = entry.name.substringAfterLast('/').substringAfterLast('\\').trim()
+        if (fileName.isEmpty() || fileName == "." || fileName == "..") {
+            _remoteDownloadError.value = "That file name cannot be saved on this device."
+            return
+        }
+        _remoteDownloadError.value = null
+        val app = getApplication<Application>()
+        val dm = app.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val request = DownloadManager.Request(Uri.parse(entry.url)).apply {
+            setTitle(fileName)
+            setDescription("ONE remote folder")
+            setNotificationVisibility(
+                DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
+            )
+            setDestinationInExternalFilesDir(
+                app, Environment.DIRECTORY_DOWNLOADS, "ONE/$fileName"
+            )
+            val creds = remoteCredentials.load(source.id)
+            if (creds != null) {
+                addRequestHeader("Authorization", Credentials.basic(creds.first, creds.second))
+            }
+        }
+        val downloadId = try {
+            dm.enqueue(request)
+        } catch (e: Exception) {
+            _remoteDownloadError.value =
+                "Could not start the download: ${e.message ?: "unknown error"}"
+            return
+        }
+        _remoteDownloadProgress.value = _remoteDownloadProgress.value + (entry.url to 0f)
+        viewModelScope.launch(Dispatchers.IO) {
+            var done = false
+            while (!done) {
+                delay(500)
+                val cursor = try {
+                    dm.query(DownloadManager.Query().setFilterById(downloadId))
+                } catch (e: Exception) {
+                    null
+                }
+                if (cursor == null) {
+                    done = true
+                    continue
+                }
+                cursor.use {
+                    if (!it.moveToFirst()) {
+                        done = true
+                        return@use
+                    }
+                    val status = it.getInt(
+                        it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)
+                    )
+                    val soFar = it.getLong(
+                        it.getColumnIndexOrThrow(
+                            DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR
+                        )
+                    )
+                    val total = it.getLong(
+                        it.getColumnIndexOrThrow(
+                            DownloadManager.COLUMN_TOTAL_SIZE_BYTES
+                        )
+                    )
+                    val fraction = if (total > 0) {
+                        (soFar.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+                    } else {
+                        0f
+                    }
+                    withContext(Dispatchers.Main) {
+                        _remoteDownloadProgress.value =
+                            _remoteDownloadProgress.value + (entry.url to fraction)
+                    }
+                    when (status) {
+                        DownloadManager.STATUS_SUCCESSFUL -> {
+                            done = true
+                            finishRemoteDownload(entry, fileName)
+                        }
+                        DownloadManager.STATUS_FAILED -> {
+                            done = true
+                            withContext(Dispatchers.Main) {
+                                _remoteDownloadProgress.value =
+                                    _remoteDownloadProgress.value - entry.url
+                                _remoteDownloadError.value =
+                                    "Download failed for $fileName."
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun dismissRemoteDownloadError() {
+        _remoteDownloadError.value = null
+    }
+
+    private suspend fun finishRemoteDownload(entry: RemoteEntry, fileName: String) {
+        val app = getApplication<Application>()
+        val staged = File(downloadRepo.downloadsDir(), fileName)
+        var destination = "Downloads/ONE"
+        if (staged.exists()) {
+            val folder = _localFolder.value
+            if (folder != null && moveIntoLocalFolder(app, folder, staged, fileName)) {
+                destination = folder.displayName
+            }
+        }
+        withContext(Dispatchers.Main) {
+            _remoteDownloadProgress.value = _remoteDownloadProgress.value - entry.url
+            _remoteDownloaded.value = _remoteDownloaded.value +
+                (entry.url to "Saved to $destination")
+            refreshLibrary()
+        }
+    }
+
+    /**
+     * Move a downloaded file into the user's local game-files folder via
+     * SAF. Returns false when the folder cannot be written (permission
+     * lost, folder gone) — the caller then leaves the file in
+     * Downloads/ONE instead.
+     */
+    private fun moveIntoLocalFolder(
+        app: Application,
+        folder: LocalFolder,
+        staged: File,
+        name: String
+    ): Boolean {
+        return try {
+            val treeUri = Uri.parse(folder.uri)
+            try {
+                app.contentResolver.takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            } catch (e: Exception) {
+                // Best effort: the folder may already be writable; the
+                // createFile call below decides.
+            }
+            val tree = DocumentFile.fromTreeUri(app, treeUri) ?: return false
+            val mime = URLConnection.guessContentTypeFromName(name)
+                ?: "application/octet-stream"
+            tree.findFile(name)?.delete()
+            val dest = tree.createFile(mime, name) ?: return false
+            app.contentResolver.openOutputStream(dest.uri)?.use { out ->
+                staged.inputStream().use { input -> input.copyTo(out) }
+            } ?: return false
+            staged.delete()
+            true
+        } catch (e: Exception) {
+            false
+        }
     }
 
     fun downloadsDirPath(): String = downloadRepo.downloadsDir().absolutePath

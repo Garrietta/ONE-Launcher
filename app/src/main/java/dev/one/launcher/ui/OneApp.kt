@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -96,6 +97,7 @@ import dev.one.launcher.data.MatchKind
 import dev.one.launcher.data.PortMatcher
 import dev.one.launcher.data.PortSettings
 import dev.one.launcher.data.PremiumizeItem
+import dev.one.launcher.data.RemoteEntry
 import dev.one.launcher.model.Port
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -146,7 +148,9 @@ fun OneApp(viewModel: OneViewModel) {
                     destinations.forEach { dest ->
                         val selected = currentRoute == dest.route ||
                             (dest == OneDestination.Library &&
-                                currentRoute?.startsWith("detail/") == true)
+                                currentRoute?.startsWith("detail/") == true) ||
+                            (dest == OneDestination.Settings &&
+                                currentRoute?.startsWith("remote/") == true)
                         NavigationBarItem(
                             selected = selected,
                             onClick = {
@@ -172,7 +176,9 @@ fun OneApp(viewModel: OneViewModel) {
                     destinations.forEach { dest ->
                         val selected = currentRoute == dest.route ||
                             (dest == OneDestination.Library &&
-                                currentRoute?.startsWith("detail/") == true)
+                                currentRoute?.startsWith("detail/") == true) ||
+                            (dest == OneDestination.Settings &&
+                                currentRoute?.startsWith("remote/") == true)
                         NavigationRailItem(
                             selected = selected,
                             onClick = {
@@ -252,7 +258,53 @@ fun OneApp(viewModel: OneViewModel) {
                     )
                 }
                 composable(OneDestination.Settings.route) {
-                    SettingsScreen(viewModel = viewModel)
+                    SettingsScreen(
+                        viewModel = viewModel,
+                        onOpenRemoteFolder = { id ->
+                            navController.navigate("remote/$id")
+                        }
+                    )
+                }
+                composable("remote/{sourceId}") { entry ->
+                    val sourceId = entry.arguments?.getString("sourceId")
+                        ?: return@composable
+                    val source = viewModel.remoteFolders.collectAsState().value
+                        .firstOrNull { it.id == sourceId } ?: return@composable
+                    LaunchedEffect(sourceId) { viewModel.openRemoteFolder(sourceId) }
+                    Scaffold(
+                        topBar = {
+                            TopAppBar(
+                                title = { Text(source.name) },
+                                navigationIcon = {
+                                    IconButton(onClick = {
+                                        if (!viewModel.navigateRemoteBack()) {
+                                            navController.popBackStack()
+                                        }
+                                    }) {
+                                        Icon(
+                                            Icons.Filled.ArrowBack,
+                                            contentDescription = "Back"
+                                        )
+                                    }
+                                },
+                                actions = {
+                                    IconButton(onClick = { viewModel.refreshRemoteBrowser() }) {
+                                        Icon(
+                                            Icons.Filled.Refresh,
+                                            contentDescription = "Refresh folder"
+                                        )
+                                    }
+                                }
+                            )
+                        }
+                    ) { innerPadding ->
+                        RemoteBrowserScreen(
+                            viewModel = viewModel,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(innerPadding)
+                        )
+                    }
                 }
             }
         }
@@ -1452,7 +1504,10 @@ private fun CloudItemRow(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsScreen(viewModel: OneViewModel) {
+private fun SettingsScreen(
+    viewModel: OneViewModel,
+    onOpenRemoteFolder: (String) -> Unit
+) {
     val context = LocalContext.current
     val account by viewModel.pmAccount.collectAsState()
     val statuses by viewModel.portStatuses.collectAsState()
@@ -1461,10 +1516,16 @@ private fun SettingsScreen(viewModel: OneViewModel) {
     val localFolderUnavailable by viewModel.localFolderUnavailable.collectAsState()
     val customLinks by viewModel.customLinks.collectAsState()
     val customLinkError by viewModel.customLinkError.collectAsState()
+    val remoteFolders by viewModel.remoteFolders.collectAsState()
+    val remoteFolderError by viewModel.remoteFolderError.collectAsState()
     val ports by viewModel.portsFlow.collectAsState()
     var message by remember { mutableStateOf<String?>(null) }
     var linkName by remember { mutableStateOf("") }
     var linkUrl by remember { mutableStateOf("") }
+    var folderName by remember { mutableStateOf("") }
+    var folderUrl by remember { mutableStateOf("") }
+    var folderUser by remember { mutableStateOf("") }
+    var folderPass by remember { mutableStateOf("") }
 
     val pickFolder = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -1680,10 +1741,101 @@ private fun SettingsScreen(viewModel: OneViewModel) {
             Spacer(modifier = Modifier.height(4.dp))
             Text(text = customLinkError!!, color = MaterialTheme.colorScheme.error)
         }
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text(text = "Remote folders", style = MaterialTheme.typography.titleMedium)
+        Text(
+            text = "Your own file servers, browsed inside ONE. A folder " +
+                "must be served as a standard directory listing or a " +
+                "simple file list (a JSON array of {name, url}). Files " +
+                "you download land in your local game-files folder when " +
+                "one is set, otherwise in Downloads/ONE — and the usual " +
+                "local-folder scan pairs them with their ports.",
+            style = MaterialTheme.typography.bodySmall
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        if (remoteFolders.isEmpty()) {
+            Text(
+                text = "No remote folders yet. Add one to browse it from here.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        } else {
+            remoteFolders.forEach { source ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        TextButton(onClick = { onOpenRemoteFolder(source.id) }) {
+                            Text(source.name)
+                        }
+                        Text(
+                            text = Uri.parse(source.url).host ?: source.url,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = { viewModel.removeRemoteFolder(source) }) {
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = "Delete ${source.name}"
+                        )
+                    }
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedTextField(
+            value = folderName,
+            onValueChange = { folderName = it },
+            label = { Text("Name") },
+            placeholder = { Text("My server") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedTextField(
+            value = folderUrl,
+            onValueChange = { folderUrl = it },
+            label = { Text("URL") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedTextField(
+            value = folderUser,
+            onValueChange = { folderUser = it },
+            label = { Text("Username (optional)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedTextField(
+            value = folderPass,
+            onValueChange = { folderPass = it },
+            label = { Text("Password (optional)") },
+            visualTransformation = PasswordVisualTransformation(),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Button(
+            onClick = {
+                if (viewModel.addRemoteFolder(folderName, folderUrl, folderUser, folderPass)) {
+                    folderName = ""
+                    folderUrl = ""
+                    folderUser = ""
+                    folderPass = ""
+                }
+            }
+        ) {
+            Text("Add folder")
+        }
+        if (remoteFolderError != null) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(text = remoteFolderError!!, color = MaterialTheme.colorScheme.error)
+        }
 
         Spacer(modifier = Modifier.height(24.dp))
         Text(text = "About", style = MaterialTheme.typography.titleMedium)
-        Text(text = "ONE 1.3.0 (debug build)", style = MaterialTheme.typography.bodyMedium)
+        Text(text = "ONE 1.4.0 (debug build)", style = MaterialTheme.typography.bodyMedium)
         Spacer(modifier = Modifier.height(8.dp))
         TextButton(onClick = { openUrl(context, "https://recompa.app") }) {
             Text(
@@ -1707,6 +1859,156 @@ private fun SettingsScreen(viewModel: OneViewModel) {
                 "no torrents, no hoster links.",
             style = MaterialTheme.typography.bodySmall
         )
+    }
+}
+
+// ---- Remote folders ----
+
+/**
+ * The isolated remote-folder browser: one user-configured source's
+ * directory listing, on its own screen. Remote entries never appear in
+ * the Library or any port matching — a file only becomes visible to the
+ * app once it lands on disk.
+ */
+@Composable
+private fun RemoteBrowserScreen(viewModel: OneViewModel, modifier: Modifier = Modifier) {
+    val state by viewModel.remoteBrowser.collectAsState()
+    val progress by viewModel.remoteDownloadProgress.collectAsState()
+    val downloaded by viewModel.remoteDownloaded.collectAsState()
+    val downloadError by viewModel.remoteDownloadError.collectAsState()
+    Column(modifier = modifier.padding(16.dp)) {
+        when (val s = state) {
+            RemoteBrowserState.Idle -> {
+                Text(
+                    text = "Pick a remote folder from Settings to browse it here.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            RemoteBrowserState.Loading -> {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
+            }
+            is RemoteBrowserState.Error -> {
+                Text(text = s.message, color = MaterialTheme.colorScheme.error)
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(onClick = { viewModel.refreshRemoteBrowser() }) {
+                    Text("Retry")
+                }
+            }
+            is RemoteBrowserState.Loaded -> {
+                if (s.trail.size > 1) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        s.trail.forEachIndexed { index, item ->
+                            if (index > 0) {
+                                Icon(
+                                    Icons.Filled.ChevronRight,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                            TextButton(onClick = { viewModel.navigateRemoteTrail(index) }) {
+                                Text(item.name)
+                            }
+                        }
+                    }
+                }
+                if (downloadError != null) {
+                    Text(text = downloadError!!, color = MaterialTheme.colorScheme.error)
+                    TextButton(onClick = { viewModel.dismissRemoteDownloadError() }) {
+                        Text("Dismiss")
+                    }
+                }
+                if (s.entries.isEmpty()) {
+                    Text(
+                        text = "This folder is empty.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
+                }
+                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    items(s.entries, key = { it.url }) { entry ->
+                        RemoteBrowserRow(
+                            entry = entry,
+                            progress = progress[entry.url],
+                            savedTo = downloaded[entry.url],
+                            onOpenFolder = { viewModel.navigateRemoteEntry(entry) },
+                            onDownload = { viewModel.downloadRemoteFile(entry) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RemoteBrowserRow(
+    entry: RemoteEntry,
+    progress: Float?,
+    savedTo: String?,
+    onOpenFolder: () -> Unit,
+    onDownload: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    if (entry.isFolder) Icons.Filled.Folder else Icons.Filled.InsertDriveFile,
+                    contentDescription = null
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = entry.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                if (entry.isFolder) {
+                    IconButton(onClick = onOpenFolder) {
+                        Icon(Icons.Filled.ChevronRight, contentDescription = "Open folder")
+                    }
+                }
+            }
+            if (!entry.isFolder) {
+                Spacer(modifier = Modifier.height(8.dp))
+                when {
+                    savedTo != null -> {
+                        Text(
+                            text = savedTo,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    progress != null -> {
+                        LinearProgressIndicator(
+                            progress = { progress },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            text = "Downloading… ${(progress * 100).toInt()}%",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    else -> {
+                        OutlinedButton(onClick = onDownload) {
+                            Icon(Icons.Filled.Download, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Download to this device")
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
