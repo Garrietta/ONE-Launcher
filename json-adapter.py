@@ -26,9 +26,10 @@ Usage:
 
 Parsing (per the site's own layout):
   1. Route discovery, crawl depth 1: the index page's sidebar
-     navigation (<nav> / <aside>) is harvested for internal category
-     URLs; external domains and anchor links (#) are filtered out. The
-     root page itself is never parsed for files.
+     navigation (<nav> / <aside>, plus a <div data-slot="sidebar">
+     for SvelteKit-style sidebars) is harvested for internal
+     category URLs; external domains and anchor links (#) are
+     filtered out. The root page itself is never parsed for files.
   2. Main-content scoping: all DOM queries are restricted to <main>;
      <nav>, <aside>, <header> and <footer> are ignored, so sidebar
      links never pollute the dataset. Files are read row by row
@@ -99,11 +100,18 @@ def fetch(url):
 # ---------------------------------------------------------------------------
 
 class NavParser(HTMLParser):
-    """Collects (href, link text) for links inside <nav> / <aside>."""
+    """Collects (href, link text) for links inside <nav> / <aside> and
+    inside <div data-slot="sidebar"> (SvelteKit-style sidebar).
+
+    The live site's sidebar is a <div data-slot="sidebar">, not a
+    <nav>/<aside>, so nav/aside alone found 0 category pages.
+    Sidebar depth counts nested <div>s so a closing </div> inside
+    the sidebar does not end the region early."""
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.nav_depth = 0
+        self.sidebar_depth = 0
         self.current_href = None
         self.current_text = []
         self.links = []
@@ -111,7 +119,14 @@ class NavParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag in ("nav", "aside"):
             self.nav_depth += 1
-        if self.nav_depth > 0 and tag == "a":
+        if tag == "div":
+            if self.sidebar_depth > 0:
+                self.sidebar_depth += 1
+            else:
+                slots = dict(attrs).get("data-slot", "")
+                if "sidebar" in [t.lower() for t in slots.split()]:
+                    self.sidebar_depth = 1
+        if (self.nav_depth > 0 or self.sidebar_depth > 0) and tag == "a":
             href = dict(attrs).get("href")
             if href:
                 self.current_href = href
@@ -120,6 +135,8 @@ class NavParser(HTMLParser):
     def handle_endtag(self, tag):
         if tag in ("nav", "aside") and self.nav_depth > 0:
             self.nav_depth -= 1
+        elif tag == "div" and self.sidebar_depth > 0:
+            self.sidebar_depth -= 1
         if tag == "a" and self.current_href is not None:
             text = "".join(self.current_text).strip()
             self.links.append((self.current_href, text))
@@ -132,7 +149,8 @@ class NavParser(HTMLParser):
 
 
 def discover_category_urls(base_url, index_html):
-    """Internal category URLs from the index sidebar, in page order."""
+    """Internal category URLs from the index sidebar (<nav>/<aside>
+    plus <div data-slot="sidebar">), in page order."""
     parser = NavParser()
     parser.feed(index_html)
     base = urllib.parse.urlparse(base_url)
