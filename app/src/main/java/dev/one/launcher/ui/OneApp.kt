@@ -127,6 +127,7 @@ import dev.one.launcher.data.FindReplace
 import dev.one.launcher.data.GameEntry
 import dev.one.launcher.data.GameFile
 import dev.one.launcher.data.GameFileSource
+import dev.one.launcher.data.GameMagnetLink
 import dev.one.launcher.data.LocalFileState
 import dev.one.launcher.data.MatchKind
 import dev.one.launcher.data.PortMatcher
@@ -142,6 +143,7 @@ import dev.one.launcher.data.formatRemoteTitle
 import dev.one.launcher.data.magnetLinkToCopy
 import dev.one.launcher.data.matchCloudFilesForGame
 import dev.one.launcher.data.matchLocalFilesForGame
+import dev.one.launcher.data.matchMagnetLinksForGame
 import dev.one.launcher.data.matchServerFilesForGame
 import dev.one.launcher.data.parseHiddenExtensions
 import dev.one.launcher.data.rankPortsByStars
@@ -1812,6 +1814,7 @@ private fun GamePageContent(
     val extractMessages by viewModel.extractMessage.collectAsState()
     val repoStars by viewModel.repoStars.collectAsState()
     val pairingCache by viewModel.pairingCache.collectAsState()
+    val magnetPairings by viewModel.magnetPairings.collectAsState()
 
     // Ranked ports: GitHub stars when known, else the catalog's
     // download counts, ports with neither last.
@@ -1855,6 +1858,23 @@ private fun GamePageContent(
         val liveNames = live.map { it.name.lowercase() }.toSet()
         val extra = cachedForGame.filter { it.name.lowercase() !in liveNames }
         dedupeGameFiles(live + extra)
+    }
+
+    // Magnet links (v1.8.3): matched from the remote folders by name
+    // through the same matcher — a magnet is a copyable link, not a
+    // file, so it is shown in its own section below, never in "Your
+    // files". Cached magnets pre-populate the section the same way
+    // cached files pre-populate "Your files": the live match wins on
+    // a magnet-URI clash, the cached copy only fills a gap.
+    val serverMagnetMatches = remember(remoteFolders, serverListings, game) {
+        val sources = remoteFolders.map { it.name to serverListings[it.id].orEmpty() }
+        matchMagnetLinksForGame(sources, game.ports)
+    }
+    val cachedMagnetsForGame = magnetPairings[game.key].orEmpty()
+    val gameMagnets = remember(serverMagnetMatches, cachedMagnetsForGame) {
+        val liveUrls = serverMagnetMatches.map { it.magnetUrl }.toSet()
+        val extra = cachedMagnetsForGame.filter { it.magnetUrl !in liveUrls }
+        (serverMagnetMatches + extra).sortedBy { it.name.lowercase() }
     }
 
     // Fetch this game's star counts and make sure its cloud and server
@@ -1969,6 +1989,30 @@ private fun GamePageContent(
                 TextButton(onClick = { viewModel.dismissExtractMessage(port.id) }) {
                     Text("Dismiss")
                 }
+            }
+        }
+
+        // ---- Magnet links (v1.8.3) ----
+        // Copyable links from the remote folders, matched to this game
+        // by name through the same matcher. They are not files — no
+        // download, never opened in the browser, and they never count
+        // toward "Your files" or "Has files". Shown only when the
+        // game has at least one; a game with magnets but no files
+        // still reads "No file for this game yet" above, which is
+        // accurate — its only links are magnets.
+        if (gameMagnets.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(text = "Magnet links", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Copy a link to use it elsewhere. Magnets are " +
+                    "never downloaded by this app.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            gameMagnets.forEach { magnet ->
+                Spacer(modifier = Modifier.height(8.dp))
+                GameMagnetRow(magnet = magnet)
             }
         }
 
@@ -2112,6 +2156,57 @@ private fun GameFileRow(
                 )
             }
         }
+    }
+}
+
+/** One row in the game page's Magnet links section: name, Magnet chip, source, Copy link. */
+@Composable
+private fun GameMagnetRow(magnet: GameMagnetLink) {
+    val context = LocalContext.current
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = magnet.name, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                text = "${magnet.where} · ${matchKindLabel(magnet.kind)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        // The Magnet chip (v1.8.0): a magnet is a copyable link, not
+        // a file, so it is visibly different from a downloadable file.
+        Surface(
+            color = MaterialTheme.colorScheme.tertiaryContainer,
+            shape = MaterialTheme.shapes.small
+        ) {
+            Text(
+                text = "Magnet",
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+            )
+        }
+    }
+    Spacer(modifier = Modifier.height(4.dp))
+    // Copy link only — never a Download button, never Open in browser.
+    // (The clipboard write itself is UI and is not JVM-testable; the
+    // link the button copies is the magnet URI itself.)
+    OutlinedButton(onClick = {
+        val link = magnet.magnetUrl.takeIf { it.isNotBlank() }
+        if (link != null) {
+            val clipboard = context.getSystemService(
+                Context.CLIPBOARD_SERVICE
+            ) as ClipboardManager
+            clipboard.setPrimaryClip(
+                ClipData.newPlainText("Magnet link", link)
+            )
+            Toast.makeText(context, "Link copied", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(context, "Link unavailable", Toast.LENGTH_SHORT).show()
+        }
+    }) {
+        Icon(Icons.Filled.ContentCopy, contentDescription = null)
+        Spacer(modifier = Modifier.width(8.dp))
+        Text("Copy link")
     }
 }
 

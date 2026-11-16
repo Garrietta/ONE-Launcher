@@ -1,10 +1,12 @@
 package dev.one.launcher
 
 import dev.one.launcher.data.CachedGameFile
+import dev.one.launcher.data.CachedMagnetLink
 import dev.one.launcher.data.DetectedFile
 import dev.one.launcher.data.GameEntry
 import dev.one.launcher.data.GameFile
 import dev.one.launcher.data.GameFileSource
+import dev.one.launcher.data.GameMagnetLink
 import dev.one.launcher.data.LibraryFilter
 import dev.one.launcher.data.LocalFileState
 import dev.one.launcher.data.MatchKind
@@ -24,14 +26,18 @@ import dev.one.launcher.data.isPairingCacheUsable
 import dev.one.launcher.data.isStarFresh
 import dev.one.launcher.data.matchCloudFilesForGame
 import dev.one.launcher.data.matchLocalFilesForGame
+import dev.one.launcher.data.matchMagnetLinksForGame
 import dev.one.launcher.data.matchServerFilesForGame
 import dev.one.launcher.data.normalizeForTokens
 import dev.one.launcher.data.pairGamesWithFiles
+import dev.one.launcher.data.pairGamesWithMagnets
 import dev.one.launcher.data.rankPortsByStars
 import dev.one.launcher.data.toCached
 import dev.one.launcher.data.toGameFile
+import dev.one.launcher.data.toGameMagnetLink
 import dev.one.launcher.data.unfoldedGridColumns
 import dev.one.launcher.model.Port
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -853,6 +859,32 @@ class GameLibraryTest {
         requiredDump = "Your own Breath of the Wild game dump."
     )
 
+    // Mirrors the live Recompa catalog entry for PokéPark Wii:
+    // Pikachu's Adventure (MildRain479/PokePark-Wiicompiled): the
+    // catalog lists one asset with accepted: [] and no zip_ok, so
+    // the port has no formats and matches by name only. Hints and
+    // distinctive hints are exactly as hintsFromGameTitle /
+    // withDistinctiveHints produce against the 2026-11-16 index
+    // ("pokepark" is shared with PokéPark 2, so it is not
+    // distinctive; "pikachu" belongs to this port alone).
+    private val pokepark = Port(
+        id = "pokepark-wiicompiled",
+        title = "PokéPark Wii: Pikachu's Adventure",
+        game = "PokéPark Wii: Pikachu's Adventure",
+        system = "Wii",
+        type = "recomp",
+        repo = "MildRain479/PokePark-Wiicompiled",
+        releasesUrl = "https://github.com/MildRain479/PokePark-Wiicompiled/releases",
+        fileExtensions = emptyList(),
+        fileNameHints = listOf(
+            "pokepark", "wii", "pikachu", "adventure", "pokepark-wiicompiled"
+        ),
+        requiredDump = "Your own PokéPark Wii disc image (USA, R8AE01).",
+        distinctiveNameHints = listOf("pikachu", "pokepark-wiicompiled"),
+        platformId = "wii",
+        platformName = "Wii"
+    )
+
     @Test
     fun filterGamesByQueryAndPlatform() {
         val games = groupPortsByGame(listOf(eidos, pokopia, soh, twoShip))
@@ -1096,6 +1128,237 @@ class GameLibraryTest {
             )
         )
         assertFalse(isPairingCacheUsable(null))
+    }
+
+    // ---- Magnet links on the game page (v1.8.3) ----
+    //
+    // Garrett's 2026-11-16 report: PokéPark Wii: Pikachu's Adventure
+    // shows "No file for this game yet" in the app, but remote.json
+    // DOES contain its per-game magnets. v1.8.0 deliberately excluded
+    // magnet entries from matching (they are copy-only links, not
+    // downloadable files), so the matcher skipped them and the game
+    // page showed nothing. Magnets are now matched by name through
+    // the same matcher and shown in their own Magnet links section —
+    // still never as downloadable files.
+
+    // One magnet entry, as remote.json carries it: the Wii system
+    // torrent's infohash (ae3e64f1…), the game name as dn, and the
+    // file's &so= index inside that torrent. The dn is built from
+    // the name so the entry is faithful; matching reads the name,
+    // never the URL.
+    private fun magnetEntry(name: String, soIndex: Int): RemoteEntry =
+        RemoteEntry(
+            name = name,
+            url = "magnet:?xt=urn:btih:ae3e64f1d5ff936fe5027a14216453101a0ddbfa" +
+                "&dn=" + java.net.URLEncoder.encode(name, "UTF-8") +
+                "&tr=udp://tracker.opentrackr.org:1337/announce" +
+                "&so=$soIndex",
+            isFolder = false,
+            kind = "magnet"
+        )
+
+    @Test
+    fun pokeparkWiiMatchesItsMagnets() {
+        // The exact entries from remote.json (Nintendo - Wii - NKit
+        // RVZ): the USA and Europe magnets match by name (NAME_ONLY —
+        // the port lists no formats), the Japanese title and the
+        // PokéPark 2 magnets do not (different titles, similarity
+        // below 0.90).
+        val sources = listOf(
+            "json" to listOf(
+                magnetEntry("PokePark Wii - Pikachu's Adventure (USA).zip", 123),
+                magnetEntry(
+                    "PokePark Wii - Pikachu's Adventure (Europe) (En,Fr,De,Es,It).zip",
+                    124
+                ),
+                magnetEntry("PokePark Wii - Pikachu no Daibouken (Japan).zip", 125),
+                magnetEntry("PokePark 2 - Wonders Beyond (USA).zip", 200),
+                magnetEntry("PokePark 2 - Wonders Beyond (Europe) (En,Fr,De,Es,It).zip", 201)
+            )
+        )
+        val magnets = matchMagnetLinksForGame(sources, listOf(pokepark))
+        assertEquals(
+            listOf(
+                "PokePark Wii - Pikachu's Adventure (Europe) (En,Fr,De,Es,It).zip",
+                "PokePark Wii - Pikachu's Adventure (USA).zip"
+            ),
+            magnets.map { it.name }
+        )
+        assertTrue(magnets.all { it.kind == MatchKind.NAME_ONLY })
+        assertTrue(magnets.all { it.portId == "pokepark-wiicompiled" })
+        assertTrue(magnets.all { it.where == "json" })
+        assertTrue(magnets.all { it.magnetUrl.startsWith("magnet:?xt=urn:btih:") })
+    }
+
+    @Test
+    fun magnetsDoNotAppearInYourFilesOrHasFiles() {
+        // The v1.8.0 guarantee, now with magnets that DO match as
+        // magnets: they still never appear in "Your files" and never
+        // count toward "Has files" — the magnet display is a separate
+        // channel.
+        val sources = listOf(
+            "json" to listOf(
+                magnetEntry("PokePark Wii - Pikachu's Adventure (USA).zip", 123)
+            )
+        )
+        assertTrue(matchServerFilesForGame(sources, listOf(pokepark)).isEmpty())
+        val games = groupPortsByGame(listOf(pokepark))
+        assertTrue(
+            gamesWithFiles(
+                games = games,
+                cloudItems = emptyList(),
+                cloudFallback = emptyMap(),
+                serverSources = sources,
+                detected = emptyMap(),
+                localStates = emptyMap()
+            ).isEmpty()
+        )
+        assertTrue(
+            pairGamesWithFiles(
+                games = games,
+                cloudItems = emptyList(),
+                cloudFallback = emptyMap(),
+                serverSources = sources,
+                detected = emptyMap(),
+                localStates = emptyMap()
+            ).isEmpty()
+        )
+    }
+
+    @Test
+    fun magnetZipNameDoesNotMatchAsDownloadableFile() {
+        // A magnet entry whose name ends in .zip still does not match
+        // as a downloadable file: the magnet: URL is rejected by the
+        // game-file gate, whatever the name ends in.
+        val entry = magnetEntry("PokePark Wii - Pikachu's Adventure (USA).zip", 123)
+        assertNull(PortMatcher.matchKind(entry.name, pokepark, entry.url))
+        assertTrue(
+            PortMatcher.matchKinds(entry.name, listOf(pokepark), entry.url).isEmpty()
+        )
+        // But the same name matches as a magnet (by name only).
+        assertEquals(
+            MatchKind.NAME_ONLY,
+            PortMatcher.matchMagnetKind(entry, pokepark)
+        )
+        // And a non-magnet entry is never a magnet match.
+        val file = RemoteEntry(
+            name = "PokePark Wii - Pikachu's Adventure (USA).zip",
+            url = "https://example.com/pokepark.zip",
+            isFolder = false
+        )
+        assertNull(PortMatcher.matchMagnetKind(file, pokepark))
+    }
+
+    @Test
+    fun wiiUTaggedMagnetDoesNotMatchSwitchBotw() {
+        // The platform-consistency rule applies to magnets too: a Wii
+        // U-tagged magnet is not a Switch game's link, however
+        // identical the titles are.
+        val sources = listOf(
+            "json" to listOf(
+                magnetEntry("Legend of Zelda Breath of the Wild (Wii U) (USA).zip", 42)
+            )
+        )
+        assertTrue(matchMagnetLinksForGame(sources, listOf(botw)).isEmpty())
+        // Without the tag, the same magnet WOULD match — the platform
+        // check is what blocks it, not the similarity gate.
+        val untagged = listOf(
+            "json" to listOf(
+                magnetEntry("Legend of Zelda Breath of the Wild (USA).zip", 43)
+            )
+        )
+        assertEquals(1, matchMagnetLinksForGame(untagged, listOf(botw)).size)
+    }
+
+    @Test
+    fun pairGamesWithMagnetsAggregatesAndCaches() {
+        val games = groupPortsByGame(listOf(pokepark, eidos))
+        val pokeparkGame = games.first { it.title == "PokéPark Wii: Pikachu's Adventure" }
+        val map = pairGamesWithMagnets(
+            games = games,
+            serverSources = listOf(
+                "json" to listOf(
+                    magnetEntry("PokePark Wii - Pikachu's Adventure (USA).zip", 123),
+                    magnetEntry(
+                        "PokePark Wii - Pikachu's Adventure (Europe) (En,Fr,De,Es,It).zip",
+                        124
+                    ),
+                    // The same magnet URI listed twice is listed once.
+                    magnetEntry("PokePark Wii - Pikachu's Adventure (USA).zip", 123)
+                ),
+                "mirror" to listOf(
+                    magnetEntry("PokePark Wii - Pikachu's Adventure (USA).zip", 123)
+                )
+            )
+        )
+        assertEquals(1, map.size)
+        assertEquals(2, map[pokeparkGame.key]!!.size)
+        // Eidos has no magnets in these sources and is absent.
+        assertFalse(map.containsKey(games.first { it.title == "Pokémon Black & White" }.key))
+        // The cache round-trips: a magnet link survives save -> load
+        // with its full magnet URI, and an unknown kind or a blank
+        // URL decodes as "not this link".
+        val link = map[pokeparkGame.key]!!.first { it.name.contains("(USA)") }
+        assertEquals(link, link.toCached().toGameMagnetLink())
+        val badKind = link.toCached().copy(kind = "NO_SUCH_KIND")
+        assertNull(badKind.toGameMagnetLink())
+        val blankUrl = link.toCached().copy(magnetUrl = "  ")
+        assertNull(blankUrl.toGameMagnetLink())
+        // A v1.8.2 cache JSON (no magnetPairings field) still decodes,
+        // with the magnet channel defaulting to empty — the background
+        // refresh then fills it in.
+        val json = Json { ignoreUnknownKeys = true }
+        val decoded = json.decodeFromString<PairingCache>(
+            """{"version":1,"computedAtMs":0,"pairings":{}}"""
+        )
+        assertTrue(decoded.magnetPairings.isEmpty())
+        assertTrue(isPairingCacheUsable(decoded))
+    }
+
+    @Test
+    fun downloadableMatchesUnchangedByMagnetMatching() {
+        // Magnets did not disturb downloadable matching: Eidos still
+        // matches Pokemon Black (downloadable) and Pokopia still
+        // matches its .nup, in the same pass that matches magnets.
+        val games = groupPortsByGame(listOf(eidos, pokopia, pokepark))
+        val files = pairGamesWithFiles(
+            games = games,
+            cloudItems = listOf(
+                PremiumizeItem(name = "Pokémon Pokopia [0400A3A01EE4C000][v655360].nup")
+            ),
+            cloudFallback = emptyMap(),
+            serverSources = listOf(
+                "json" to listOf(
+                    RemoteEntry(
+                        name = "Pokemon Black (NDS) (USA)",
+                        url = "https://example.com/pokemon-black.zip",
+                        isFolder = false
+                    ),
+                    magnetEntry("PokePark Wii - Pikachu's Adventure (USA).zip", 123)
+                )
+            ),
+            detected = emptyMap(),
+            localStates = emptyMap()
+        )
+        val eidosGame = games.first { it.title == "Pokémon Black & White" }
+        val pokopiaGame = games.first { it.title == "Pokopia" }
+        val pokeparkGame = games.first { it.title == "PokéPark Wii: Pikachu's Adventure" }
+        assertEquals("Pokemon Black (NDS) (USA)", files[eidosGame.key]!!.single().name)
+        assertEquals(GameFileSource.CLOUD, files[pokopiaGame.key]!!.single().source)
+        // The magnet is not a downloadable file for the PokePark game.
+        assertFalse(files.containsKey(pokeparkGame.key))
+        // ...but it is a magnet link for it.
+        val magnets = pairGamesWithMagnets(
+            games,
+            listOf(
+                "json" to listOf(
+                    magnetEntry("PokePark Wii - Pikachu's Adventure (USA).zip", 123)
+                )
+            )
+        )
+        assertEquals(1, magnets[pokeparkGame.key]!!.size)
+        assertFalse(magnets.containsKey(eidosGame.key))
+        assertFalse(magnets.containsKey(pokopiaGame.key))
     }
 }
 

@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.8.3 — 2026-11-16
+
+Magnet links on the game page. A game whose only links are magnets
+no longer reads "No file for this game yet": magnet entries are now
+matched to games by name through the same matcher (platform-
+consistency, 90% title similarity, extension gate on the name — the
+magnet: URL is never passed to the gate) and shown in their own
+Magnet links section on the game page, with a Copy link action
+(clipboard + "Link copied" toast). Magnets are still copy-only links,
+never downloadable files: they stay out of "Your files" and out of
+the "Has files" downloadable-file set, there is never a Download
+action for them, and they never open in the browser. The pairing
+cache carries the magnet pairings alongside the file pairings, so the
+Magnet links section pre-populates on reopen the same way "Your
+files" does; the remote-folder browser's Magnet chip + Copy link
+behavior is unchanged. The matcher rules are unchanged
+(platform-consistency, 90% similarity, and the extension gate all
+still hold — verified over the full merged catalog: no downloadable
+true positive lost, and the four v1.8.0 false positives stay blocked
+for magnets too).
+
+- PokéPark Wii: Pikachu's Adventure (Wii) now shows its per-game
+  magnets (USA and Europe versions) on its game page, where v1.8.0
+  showed nothing because magnets were excluded from matching.
+- A Wii U-tagged magnet does not match a Switch game (the
+  platform-consistency rule applies to magnets too).
+- A magnet whose name ends in .zip still never matches as a
+  downloadable file (the v1.8.0 guarantee holds).
+
 ## v1.8.2 — 2026-11-16
 
 Library navigation, folded layout, file source tags, and a pairing

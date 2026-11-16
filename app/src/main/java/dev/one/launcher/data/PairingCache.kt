@@ -51,12 +51,32 @@ data class CachedGameFile(
     val downloadedInnerEntry: String? = null
 )
 
-/** The whole cache: version, when it was computed, game key -> files. */
+/** One cached magnet link for a game (v1.8.3). `magnetUrl` is the
+ *  full magnet: URI to copy. `kind` is the [MatchKind] name as a
+ *  string, so an unknown value from a future version decodes as "not
+ *  this link" instead of crashing the whole cache. */
+@Serializable
+data class CachedMagnetLink(
+    val name: String,
+    val magnetUrl: String,
+    val kind: String,
+    val portId: String,
+    val where: String,
+    val remoteSourceName: String? = null
+)
+
+/** The whole cache: version, when it was computed, game key -> files.
+ *  `magnetPairings` is the magnet channel (v1.8.3): game key -> magnet
+ *  links, cached alongside the downloadable files so the game page
+ *  pre-populates its Magnet links too. It defaults to empty, so a
+ *  cache written by v1.8.2 (which has no such field) still decodes —
+ *  the background refresh then fills it in. */
 @Serializable
 data class PairingCache(
     val version: Int,
     val computedAtMs: Long,
-    val pairings: Map<String, List<CachedGameFile>>
+    val pairings: Map<String, List<CachedGameFile>>,
+    val magnetPairings: Map<String, List<CachedMagnetLink>> = emptyMap()
 )
 
 /** True when a loaded cache may be used: present and written under
@@ -106,5 +126,36 @@ fun CachedGameFile.toGameFile(): GameFile? {
         remoteUrl = remoteUrl,
         detected = detected,
         downloadedInnerEntry = downloadedInnerEntry
+    )
+}
+
+/** A [GameMagnetLink] as a cache record. */
+fun GameMagnetLink.toCached(): CachedMagnetLink =
+    CachedMagnetLink(
+        name = name,
+        magnetUrl = magnetUrl,
+        kind = kind.name,
+        portId = portId,
+        where = where,
+        remoteSourceName = remoteSourceName
+    )
+
+/** A cache record back to a [GameMagnetLink]. Null when the stored
+ *  kind is not a known enum value, or the magnet URL is blank — the
+ *  record is dropped, never allowed to poison the game page. */
+fun CachedMagnetLink.toGameMagnetLink(): GameMagnetLink? {
+    if (magnetUrl.isBlank()) return null
+    val kind = try {
+        MatchKind.valueOf(kind)
+    } catch (e: IllegalArgumentException) {
+        return null
+    }
+    return GameMagnetLink(
+        name = name,
+        magnetUrl = magnetUrl,
+        kind = kind,
+        portId = portId,
+        where = where,
+        remoteSourceName = remoteSourceName
     )
 }

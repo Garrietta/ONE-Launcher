@@ -360,6 +360,29 @@ object PortMatcher {
         }
 
     /**
+     * Match one magnet entry against a port, for the game page's
+     * Magnet links section (v1.8.3). A magnet is a copyable link,
+     * not a file, so it is matched by its NAME only — the magnet:
+     * URI carries no file extension and must never be passed to the
+     * gate (it would reject every magnet outright, which is why the
+     * v1.8.0 game page showed "No file for this game yet" for games
+     * whose only links are magnets). The same rules as [matchKind]
+     * apply: the game-file gate on the name's extension (magnets
+     * are .zip-named, so the archive / name-only path applies), the
+     * platform-consistency check (a Wii U-tagged magnet is not a
+     * Switch game's link), and the 90% title-similarity gate for
+     * NAME_ONLY. A magnet whose name has no game-file extension
+     * matches nothing. The result is a display-only copy link — the
+     * caller must keep it in the magnet display, out of "Your
+     * files" and "Has files" (see [matchRemoteEntries] and
+     * [matchServerFilesForGame]).
+     */
+    fun matchMagnetKind(entry: RemoteEntry, port: Port): MatchKind? {
+        if (!entry.isMagnet) return null
+        return matchKind(entry.name, port, fileUrl = null)
+    }
+
+    /**
      * Inspect a .zip already on this device: returns the name of the first
      * entry that matches the port directly (extension + hint), or null when
      * no entry matches or the file cannot be read as a zip. Only the entry

@@ -14,6 +14,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import dev.one.launcher.data.CachedGameFile
+import dev.one.launcher.data.CachedMagnetLink
 import dev.one.launcher.data.CustomLink
 import dev.one.launcher.data.CustomLinksStore
 import dev.one.launcher.data.DetectedFile
@@ -21,6 +22,7 @@ import dev.one.launcher.data.DownloadRepository
 import dev.one.launcher.data.DownloadState
 import dev.one.launcher.data.GameEntry
 import dev.one.launcher.data.GameFile
+import dev.one.launcher.data.GameMagnetLink
 import dev.one.launcher.data.GitHubAsset
 import dev.one.launcher.data.GitHubRelease
 import dev.one.launcher.data.GitHubReleasesApi
@@ -69,11 +71,13 @@ import dev.one.launcher.data.mergeCatalogs
 import dev.one.launcher.data.normalizeCustomLinkUrl
 import dev.one.launcher.data.normalizeRemoteFolderUrl
 import dev.one.launcher.data.pairGamesWithFiles
+import dev.one.launcher.data.pairGamesWithMagnets
 import dev.one.launcher.data.pickApkAsset
 import dev.one.launcher.data.resolveDetected
 import dev.one.launcher.data.sha256Matches
 import dev.one.launcher.data.toCached
 import dev.one.launcher.data.toGameFile
+import dev.one.launcher.data.toGameMagnetLink
 import dev.one.launcher.model.Port
 import dev.one.launcher.model.PortCatalog
 import dev.one.launcher.model.PortFork
@@ -413,6 +417,25 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
         _pairingCache.value = map
     }
 
+    /**
+     * Magnet pairings (v1.8.3): per-game matched magnet links (game
+     * key -> links), loaded from disk on startup and refreshed in the
+     * background alongside the file pairings. A separate channel from
+     * the downloadable-file pairings — magnets never feed "Has
+     * files" or "Your files", only the game page's Magnet links
+     * section, which pre-populates from this instead of waiting on a
+     * re-run of the match.
+     */
+    private val _magnetPairings =
+        MutableStateFlow<Map<String, List<GameMagnetLink>>>(emptyMap())
+    val magnetPairings: StateFlow<Map<String, List<GameMagnetLink>>> =
+        _magnetPairings.asStateFlow()
+
+    /** Replace the magnet pairings state. */
+    private fun setMagnetPairings(map: Map<String, List<GameMagnetLink>>) {
+        _magnetPairings.value = map
+    }
+
     private val pairingCacheStore = PairingCacheStore(application)
 
     /**
@@ -429,6 +452,13 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
      * pairings actually changed.
      */
     private var lastSavedPairings: Map<String, List<CachedGameFile>> = emptyMap()
+
+    /** The cached form of the last magnet pairing map saved (or
+     *  loaded) — the magnet channel's equivalent of
+     *  [lastSavedPairings], so the store is only rewritten when the
+     *  magnet pairings actually changed. */
+    private var lastSavedMagnetPairings: Map<String, List<CachedMagnetLink>> =
+        emptyMap()
 
     private val starsApi = GitHubStarsApi()
     private val starCacheStore = StarCacheStore(application)
@@ -575,6 +605,15 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
                 }.filterValues { it.isNotEmpty() }
                 setPairingCache(map)
                 _gamesWithFiles.value = map.keys
+                // Magnet pairings (v1.8.3): same restore, same
+                // channel separation — a cache written by v1.8.2 has
+                // no magnet field and decodes it as empty, and the
+                // background refresh fills it in.
+                lastSavedMagnetPairings = cache.magnetPairings
+                val magnetMap = cache.magnetPairings.mapValues { (_, links) ->
+                    links.mapNotNull { it.toGameMagnetLink() }
+                }.filterValues { it.isNotEmpty() }
+                setMagnetPairings(magnetMap)
             }
             pairingCacheLoaded = true
         }
@@ -619,14 +658,17 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
                 // The full pairing map (game key -> files); the "Has
                 // files" set is its keys. Computing the map costs the
                 // same matching the set did — the per-game files are
-                // the same work, grouped.
+                // the same work, grouped. The magnet pairings
+                // (v1.8.3) ride alongside in the same pass — same
+                // server sources, separate channel, never feeding
+                // "Has files".
                 pairGamesWithFiles(
                     games, cloudFiles, cloudFallback, serverSources,
                     detected, localStates
-                )
+                ) to pairGamesWithMagnets(games, serverSources)
             }
                 .flowOn(Dispatchers.Default)
-                .collect { pairingMap ->
+                .collect { (pairingMap, magnetMap) ->
                     // The cache pre-populates _gamesWithFiles on
                     // startup; the live result only replaces it once
                     // the refresh is settled (every source loaded), so
@@ -635,7 +677,7 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
                     // before it has even been loaded.
                     if (!pairingCacheLoaded) return@collect
                     if (!isPairingRefreshSettled()) return@collect
-                    savePairingCacheIfChanged(pairingMap)
+                    savePairingCacheIfChanged(pairingMap, magnetMap)
                 }
         }
     }
@@ -656,16 +698,28 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Overwrite the pairing cache with a fresh pairing map, when it
+     * Overwrite the pairing cache with fresh pairing maps, when they
      * actually changed. Also moves the live "Has files" set to the new
-     * map's keys. The store write is best-effort; the in-memory
-     * pairings stand even if it fails.
+     * file map's keys. The store write is best-effort; the in-memory
+     * pairings stand even if it fails. The file and magnet channels
+     * are compared and saved together, in one cache record — a
+     * refresh that changes only one still writes both, so the two
+     * channels can never drift apart on disk.
      */
-    private fun savePairingCacheIfChanged(map: Map<String, List<GameFile>>) {
+    private fun savePairingCacheIfChanged(
+        map: Map<String, List<GameFile>>,
+        magnetMap: Map<String, List<GameMagnetLink>>
+    ) {
         val cachedForm = map.mapValues { (_, files) -> files.map { it.toCached() } }
-        if (cachedForm == lastSavedPairings) return
+        val magnetCachedForm =
+            magnetMap.mapValues { (_, links) -> links.map { it.toCached() } }
+        if (cachedForm == lastSavedPairings &&
+            magnetCachedForm == lastSavedMagnetPairings
+        ) return
         lastSavedPairings = cachedForm
+        lastSavedMagnetPairings = magnetCachedForm
         setPairingCache(map)
+        setMagnetPairings(magnetMap)
         _gamesWithFiles.value = map.keys
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -673,7 +727,8 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
                     PairingCache(
                         PAIRING_CACHE_VERSION,
                         System.currentTimeMillis(),
-                        cachedForm
+                        cachedForm,
+                        magnetCachedForm
                     )
                 )
             } catch (e: Exception) {

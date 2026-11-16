@@ -202,6 +202,62 @@ fun matchServerFilesForGame(
 }
 
 /**
+ * One magnet link for a game, from a remote folder (v1.8.3). A magnet
+ * is a copyable link, not a file: `magnetUrl` is the full magnet: URI
+ * to copy (never a download, never opened in the browser). `kind` is
+ * the match kind it matched by (usually NAME_ONLY — most ports list
+ * no formats). `where` is the remote folder's configured name.
+ */
+data class GameMagnetLink(
+    val name: String,
+    val magnetUrl: String,
+    val kind: MatchKind,
+    val portId: String,
+    val where: String,
+    val remoteSourceName: String? = null
+)
+
+/**
+ * Remote-folder magnet links matching any of the game's ports
+ * (v1.8.3). `sources` is (source name, file entries) per configured
+ * remote folder. Only magnet entries are considered, matched by name
+ * through the same matcher (platform-consistency, 90% similarity,
+ * extension gate on the name) — the magnet: URL is never passed to
+ * the gate. A magnet matching several of the game's ports is listed
+ * once, against the first matching port; the same magnet URI listed
+ * in two sources is listed once. The result is ordered by name.
+ * These are display-only copy links: they never enter "Your files"
+ * or "Has files" — see [matchServerFilesForGame].
+ */
+fun matchMagnetLinksForGame(
+    sources: List<Pair<String, List<RemoteEntry>>>,
+    ports: List<Port>
+): List<GameMagnetLink> {
+    val out = mutableListOf<GameMagnetLink>()
+    val seenUrls = mutableSetOf<String>()
+    for ((sourceName, entries) in sources) {
+        for (entry in entries) {
+            if (entry.isFolder || !entry.isMagnet) continue
+            if (!seenUrls.add(entry.url)) continue
+            val match = ports.firstNotNullOfOrNull { port ->
+                PortMatcher.matchMagnetKind(entry, port)?.let { port to it }
+            } ?: continue
+            out.add(
+                GameMagnetLink(
+                    name = entry.name,
+                    magnetUrl = entry.url,
+                    kind = match.second,
+                    portId = match.first.id,
+                    where = sourceName,
+                    remoteSourceName = sourceName
+                )
+            )
+        }
+    }
+    return out.sortedBy { it.name.lowercase() }
+}
+
+/**
  * The local side of one port's files, as the game page needs it. The
  * UI maps each port's [dev.one.launcher.ui.PortStatus] onto this —
  * this file stays free of the UI layer.
@@ -468,6 +524,27 @@ fun pairGamesWithFiles(
         val local = matchLocalFilesForGame(detected, localStates, game.ports)
         val files = dedupeGameFiles(local + cloud + server)
         if (files.isNotEmpty()) out[game.key] = files
+    }
+    return out
+}
+
+/**
+ * The magnet pairing computation (v1.8.3): every game's matched
+ * magnet links, from the remote folders only (magnets only ever come
+ * from a remote folder's JSON list). Pure, so the background refresh
+ * can run it alongside [pairGamesWithFiles] and the cache round-trip
+ * is unit-testable. Only games with at least one magnet are present.
+ * Magnet pairings are a separate channel from the downloadable-file
+ * pairings — they never feed "Has files" or "Your files".
+ */
+fun pairGamesWithMagnets(
+    games: List<GameEntry>,
+    serverSources: List<Pair<String, List<RemoteEntry>>>
+): Map<String, List<GameMagnetLink>> {
+    val out = mutableMapOf<String, List<GameMagnetLink>>()
+    for (game in games) {
+        val magnets = matchMagnetLinksForGame(serverSources, game.ports)
+        if (magnets.isNotEmpty()) out[game.key] = magnets
     }
     return out
 }

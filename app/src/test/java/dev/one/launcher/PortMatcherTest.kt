@@ -2,6 +2,7 @@ package dev.one.launcher
 
 import dev.one.launcher.data.MatchKind
 import dev.one.launcher.data.PortMatcher
+import dev.one.launcher.data.RemoteEntry
 import dev.one.launcher.data.withDistinctiveHints
 import dev.one.launcher.model.Port
 import org.junit.Assert.assertEquals
@@ -470,6 +471,39 @@ class PortMatcherTest {
         assertTrue(shock.distinctiveNameHints.contains("system"))
         assertNull(
             PortMatcher.matchKind("Sega - Master System - Mark III.zip", shock)
+        )
+    }
+
+    @Test
+    fun singleWordFalsePositivesStillBlockedForMagnets() {
+        // The four v1.8.0 false positives, as magnet entries (v1.8.3):
+        // the same 90% similarity gate blocks them — a magnet whose
+        // name is mostly another game's title is not this game's
+        // link. Magnet matching must not re-open the false positives
+        // the gate closed for downloadable files.
+        val ports = withDistinctiveHints(
+            listOf(blueDragon, marbleBlastGold, splinterCellDoubleAgent, systemShock)
+        )
+        val blue = ports.first { it.id == "blue-dragon" }
+        val gold = ports.first { it.id == "marble-blast-gold" }
+        val cell = ports.first { it.id == "splinter-cell-double-agent" }
+        val shock = ports.first { it.id == "system-shock" }
+        val magnetUrl =
+            "magnet:?xt=urn:btih:9c6e87aaca8a26f4755d44079d5575b1732428f6" +
+                "&dn=Minerva_Myrient&tr=udp://tracker.opentrackr.org:1337/announce"
+        fun magnet(name: String) =
+            RemoteEntry(name, magnetUrl, isFolder = false, kind = "magnet")
+        assertNull(PortMatcher.matchMagnetKind(magnet("Pokemon Blue (GB) (USA).zip"), blue))
+        assertNull(PortMatcher.matchMagnetKind(magnet("Pokemon Gold (GBC) (USA).zip"), gold))
+        assertNull(
+            PortMatcher.matchMagnetKind(
+                magnet("Mario Kart Double Dash (GC) (USA).zip"), cell
+            )
+        )
+        assertNull(
+            PortMatcher.matchMagnetKind(
+                magnet("Sega - Master System - Mark III.zip"), shock
+            )
         )
     }
 
