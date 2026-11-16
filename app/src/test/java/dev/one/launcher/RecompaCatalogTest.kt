@@ -1,6 +1,7 @@
 package dev.one.launcher
 
 import dev.one.launcher.data.CURATED_CATALOG_IDS
+import dev.one.launcher.data.MatchKind
 import dev.one.launcher.data.PortMatcher
 import dev.one.launcher.data.RecompaAsset
 import dev.one.launcher.data.RecompaFork
