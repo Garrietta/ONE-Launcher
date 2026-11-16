@@ -54,6 +54,7 @@ import dev.one.launcher.data.SecureKeyStore
 import dev.one.launcher.data.StarCacheStore
 import dev.one.launcher.data.StarEntry
 import dev.one.launcher.data.compareVersions
+import dev.one.launcher.data.filterRemoteEntriesToGameFiles
 import dev.one.launcher.data.findGame
 import dev.one.launcher.data.gamesWithFiles
 import dev.one.launcher.data.groupPortsByGame
@@ -1605,6 +1606,16 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
         fetchRemoteUrl(current.url)
     }
 
+    /**
+     * Fetch one remote folder for the browser screen. Only game files
+     * are shown (v1.6.1, [filterRemoteEntriesToGameFiles]): a folder
+     * full of collection indexes, Redump/TOSEC lists, or firmware
+     * links shows as an empty folder, not as a wall of files that are
+     * not games. Folders themselves are always kept — they are
+     * navigation. The filter is display only: the Server library
+     * matching still runs on the full listing through the matcher
+     * gate, so nothing that could match is lost here.
+     */
     private fun fetchRemoteUrl(url: String) {
         val source = remoteSource ?: return
         _remoteBrowser.value = RemoteBrowserState.Loading
@@ -1614,7 +1625,10 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
             withContext(Dispatchers.Main) {
                 _remoteBrowser.value = when (result) {
                     is RemoteListingResult.Listing ->
-                        RemoteBrowserState.Loaded(result.entries, remoteTrail)
+                        RemoteBrowserState.Loaded(
+                            filterRemoteEntriesToGameFiles(result.entries),
+                            remoteTrail
+                        )
                     is RemoteListingResult.Error ->
                         RemoteBrowserState.Error(result.message)
                 }
@@ -1798,3 +1812,4 @@ class OneViewModelFactory(private val application: Application) : ViewModelProvi
         throw IllegalArgumentException("Unknown ViewModel class")
     }
 }
+

@@ -666,7 +666,7 @@ private fun GameList(
                 }
                 val hasCloudFile = cloudFiles.any { item ->
                     selectedGame.ports.any { port ->
-                        PortMatcher.matchKind(item.name, port) != null
+                        PortMatcher.matchKind(item.name, port, item.link) != null
                     }
                 }
                 Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
@@ -1026,10 +1026,10 @@ private fun GameDetailContent(
     // Cloud files matching this port: the flat listAll cache first, the
     // per-port search fallback when listAll failed for this port.
     val cloudMatches = cloudAllFiles.mapNotNull { item ->
-        PortMatcher.matchKind(item.name, port)?.let { item to it }
+        PortMatcher.matchKind(item.name, port, item.link)?.let { item to it }
     }.ifEmpty {
         (cloudFallback[port.id].orEmpty()).mapNotNull { item ->
-            PortMatcher.matchKind(item.name, port)?.let { item to it }
+            PortMatcher.matchKind(item.name, port, item.link)?.let { item to it }
         }
     }
 
@@ -2193,7 +2193,7 @@ private fun CloudItemRow(
                 }
             }
             if (item.type != "folder") {
-                val matches = PortMatcher.matchKinds(item.name, ports)
+                val matches = PortMatcher.matchKinds(item.name, ports, item.link)
                 if (matches.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(4.dp))
                     // FlowRow, not a plain Row: a Row gives each chip past
@@ -3071,3 +3071,4 @@ private fun formatPremiumUntil(unixSeconds: Long): String {
     val date = Date(unixSeconds * 1000)
     return SimpleDateFormat("MMM d, yyyy", Locale.US).format(date)
 }
+

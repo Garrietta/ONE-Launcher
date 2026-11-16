@@ -64,6 +64,18 @@ data class PortMatch(
  * — the detail screen lets the user assign it to the right port. This
  * never deletes or moves user files.
  *
+ * Before anything else, a file must be a game file
+ * ([isGameFileForPort], v1.6.1): its extension — from the file name
+ * or the URL, either side may carry it — is an archive or one of the
+ * port's platform's game extensions ([GAME_FILE_EXTENSIONS]), or one
+ * of the port's own catalog formats. A movie (.mkv), a document
+ * (.txt, .html), or a collection index with no extension on either
+ * side can never match, however many of the port's hints its name
+ * contains — a name-only match is no longer a free pass for non-game
+ * files. The gate is a precondition on every match kind (DIRECT,
+ * ARCHIVE_*, NAME_ONLY); it does not replace the hint/extension
+ * logic below it.
+ *
  * Archives (.zip, .7z, .rar) are matched on name only: an archive matches
  * a port when its base name (minus the extension) contains one of the
  * port's hints. A .zip that is already on this device can be confirmed by
@@ -114,7 +126,40 @@ object PortMatcher {
         return words.windowed(hintWords.size).any { it == hintWords }
     }
 
-    fun matches(fileName: String, port: Port): Boolean {
+    /**
+     * The game-file gate (v1.6.1): true when the file is a game file
+     * for this port. The extension may come from the file name or
+     * the URL — either side may carry it (a remote entry's name is
+     * often extension-less while its URL ends in ".zip/"). An
+     * archive is always a game file; otherwise the extension must
+     * be one of the port's own catalog formats — a future catalog
+     * format the dictionary does not list yet must never be blocked
+     * by the gate — or one of the port's platform's game extensions
+     * (the union across platforms when the platform is unknown,
+     * "other", or unlisted). A file with no extension on either side
+     * is never a game file.
+     */
+    private fun isGameFileForPort(
+        fileName: String,
+        port: Port,
+        fileUrl: String? = null
+    ): Boolean {
+        val exts = listOfNotNull(
+            extensionOf(fileName),
+            fileUrl?.let { extensionOf(it) }
+        )
+        if (exts.isEmpty()) return false
+        val ownFormats = port.fileExtensions.map { it.trimStart('.').lowercase() }
+        val platformFormats = extensionsForPlatform(port.platformId)
+        return exts.any { ext ->
+            isArchiveExtension(ext) ||
+                ext in ownFormats ||
+                ext in platformFormats
+        }
+    }
+
+    fun matches(fileName: String, port: Port, fileUrl: String? = null): Boolean {
+        if (!isGameFileForPort(fileName, port, fileUrl)) return false
         // No file info (e.g. a catalog port whose assets[] is missing):
         // matching is disabled rather than guessed.
         if (port.fileExtensions.isEmpty()) return false
@@ -145,6 +190,14 @@ object PortMatcher {
      * format to verify against. Never inspects file contents — pass a
      * File to [inspectZip] for that.
      *
+     * The game-file gate runs first (v1.6.1): a file that is not a
+     * game file returns null here, whatever its name contains.
+     * [fileUrl] carries the extension when the name does not — a
+     * remote entry's name is often extension-less while its URL ends
+     * in ".zip/"; either side saying "game file" is enough, so a
+     * local or cloud file whose name already has its extension needs
+     * no URL at all.
+     *
      * The name-only branch applies ONLY when the port has no formats
      * at all, and only in two ways: (1) a distinctive hint — one no
      * other port in the catalog shares, at least 4 characters long —
@@ -155,8 +208,11 @@ object PortMatcher {
      * is Eidos's file, not Arceus's). Ports with formats keep the
      * strict extension-gated matching above, unchanged.
      */
-    fun matchKind(fileName: String, port: Port): MatchKind? {
-        if (matches(fileName, port)) return MatchKind.DIRECT
+    fun matchKind(fileName: String, port: Port, fileUrl: String? = null): MatchKind? {
+        // The game-file gate first: a non-game file matches nothing,
+        // whatever its name contains.
+        if (!isGameFileForPort(fileName, port, fileUrl)) return null
+        if (matches(fileName, port, fileUrl)) return MatchKind.DIRECT
         if (port.fileExtensions.isEmpty()) {
             // No formats in the catalog for this port: match on the
             // game's name only. A port with no distinctive hint and
@@ -217,28 +273,38 @@ object PortMatcher {
         return false
     }
 
-    fun matchingPorts(fileName: String, ports: List<Port>): List<Port> =
-        ports.filter { matchKind(fileName, it) != null }
+    fun matchingPorts(
+        fileName: String,
+        ports: List<Port>,
+        fileUrl: String? = null
+    ): List<Port> =
+        ports.filter { matchKind(fileName, it, fileUrl) != null }
 
-    fun matchKinds(fileName: String, ports: List<Port>): List<PortMatch> =
+    fun matchKinds(
+        fileName: String,
+        ports: List<Port>,
+        fileUrl: String? = null
+    ): List<PortMatch> =
         ports.mapNotNull { port ->
-            matchKind(fileName, port)?.let { PortMatch(port, it) }
+            matchKind(fileName, port, fileUrl)?.let { PortMatch(port, it) }
         }
 
     /**
      * Match one remote directory's FILE entries against a port, for the
      * detail page's Server library section. Folders are never returned:
      * a folder name can hit a hint, but the section lists files the
-     * user can open in the browser. This is the ONLY place remote
-     * entries are matched to ports — the Library, its search, and the
-     * home page never see remote entries.
+     * user can open in the browser. The entry's URL is passed through
+     * too — either side may carry the extension, and a remote entry's
+     * name is often extension-less while its URL ends in ".zip/".
+     * This is the ONLY place remote entries are matched to ports — the
+     * Library, its search, and the home page never see remote entries.
      */
     fun matchRemoteEntries(
         entries: List<RemoteEntry>,
         port: Port
     ): List<Pair<RemoteEntry, MatchKind>> =
         entries.filter { !it.isFolder }.mapNotNull { entry ->
-            matchKind(entry.name, port)?.let { entry to it }
+            matchKind(entry.name, port, entry.url)?.let { entry to it }
         }
 
     /**
@@ -289,3 +355,4 @@ object PortMatcher {
         }
     }
 }
+

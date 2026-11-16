@@ -1,5 +1,50 @@
 # Changelog
 
+## v1.6.1 — 2026-11-16
+
+Garrett's v1.6.0 device report: movie files were matching to games
+("The Last Airbender (2010).mkv" on The Last of Us Remastered, a 2008
+Dark Knight .mkv on The Dark Knight Rises) and the JSON remote folder
+showed hundreds of non-game entries (Redump/TOSEC indexes, collection
+pages, firmware links). The fix is a game-file gate, not a matcher-rule
+change: before a file can match any port, in any source, it must be a
+game file — its extension is in the dictionary for the port's platform
+(or the union across platforms when the platform is "other" or
+unknown), or it is an archive. Upgrades in place over the v1.6.0
+release build (same signature).
+
+- New platform → game-extensions dictionary (data/GameExtensions.kt):
+  seeded from the live Recompa catalog's accepted formats per platform
+  (32x, ds, gamecube, gb, gba, gbc, n64, pc, ps2, snes, wii, xbox,
+  xbox360) with the standard formats filled in for the 13 platforms
+  the catalog lists none for (3ds, amiga, dos, genesis, nes, ps1, ps3,
+  ps4, psp, switch, switch2, wiiu, and "other" — explicit empty),
+  plus Mastersystem and Dreamcast. Archives (.zip/.7z/.rar) are
+  platform-agnostic.
+- Matching gate: a file must be a game file before it can match a
+  port/game in ANY source (Premiumize cloud, local folder, remote
+  folders) — a precondition on every match kind (DIRECT, ARCHIVE_*,
+  NAME_ONLY). The extension comes from the file name, else from the
+  URL (a remote entry's name is often extension-less while its URL
+  ends in ".zip/"). A file with no extension in either place can never
+  match. The distinctive-hint and two-hint rules are unchanged, and
+  the port's own catalog formats are always accepted, so a future
+  catalog format the dictionary does not list yet is never blocked.
+  The two reported .mkv false positives are gone; Eidos still matches
+  "Pokemon Black (NDS) (USA)" (its .zip URL), Pokopia still matches
+  its .nup only, the OoT zip still matches Ship of Harkinian only,
+  and the v1.5.0 false positives stay clean. A Redump entry (no
+  extension in name or URL) matches nothing.
+- Remote folder browser: only game files are shown now (folders are
+  always kept, for navigation). Against the live remote.json (376
+  entries) the browser shows 73 game files (the archives) and hides
+  303 (301 with no URL extension — Redump, TOSEC, collections,
+  firmware — plus 2 .html). The Pokémon and Metroid Prime entries
+  still show. The filter is display only; the Server library matching
+  still runs on the full listing through the matcher gate.
+- Platform display: the catalog calls platform id "other" "Otra" —
+  the app now shows "Other". Catalog data untouched.
+
 ## v1.6.0 — 2026-11-16
 
 The Library is game-centric now: it lists games, not ports. "Ocarina
@@ -446,3 +491,4 @@ Initial release.
   DataStore.
 - Known limits: debug builds only (no release signing yet); per-port
   settings are stored preferences, not enforced inside the port apps.
+

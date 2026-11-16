@@ -40,6 +40,15 @@ data class GameEntry(
 fun gameKey(title: String, platform: String): String =
     slugify(title) + "--" + slugify(platform)
 
+/**
+ * Display name for a platform (v1.6.1). The catalog calls platform id
+ * "other" "Otra" — the app shows "Other". Catalog data is untouched;
+ * this is display only, applied where a game is grouped so every UI
+ * surface (shelf, game page, platform filter, rail) agrees.
+ */
+fun displayPlatformName(platformId: String, platformName: String): String =
+    if (platformId.equals("other", ignoreCase = true)) "Other" else platformName
+
 private fun slugify(text: String): String =
     text.lowercase()
         .replace(Regex("[^a-z0-9]+"), "-")
@@ -73,7 +82,10 @@ fun groupPortsByGame(ports: List<Port>): List<GameEntry> {
     for (port in ports) {
         if (isEmulator(port)) continue
         val title = port.game.ifBlank { port.title }
-        val platform = port.platformName.ifBlank { port.system }
+        val platform = displayPlatformName(
+            port.platformId,
+            port.platformName.ifBlank { port.system }
+        )
         groups.getOrPut(title to platform) { mutableListOf() }.add(port)
     }
     return groups.entries
@@ -140,7 +152,7 @@ fun matchCloudFilesForGame(
 ): List<GameFile> =
     items.filter { it.type != "folder" }.mapNotNull { item ->
         val match = ports.firstNotNullOfOrNull { port ->
-            PortMatcher.matchKind(item.name, port)?.let { port to it }
+            PortMatcher.matchKind(item.name, port, item.link)?.let { port to it }
         } ?: return@mapNotNull null
         GameFile(
             name = item.name,
@@ -167,7 +179,7 @@ fun matchServerFilesForGame(
         for (entry in entries) {
             if (entry.isFolder) continue
             val match = ports.firstNotNullOfOrNull { port ->
-                PortMatcher.matchKind(entry.name, port)?.let { port to it }
+                PortMatcher.matchKind(entry.name, port, entry.url)?.let { port to it }
             } ?: continue
             out.add(
                 GameFile(
@@ -339,14 +351,14 @@ fun gamesWithFiles(
     }
     for (item in cloud) {
         if (item.type == "folder") continue
-        for (match in PortMatcher.matchKinds(item.name, ports)) {
+        for (match in PortMatcher.matchKinds(item.name, ports, item.link)) {
             matchedPorts.add(match.port.id)
         }
     }
     for ((_, entries) in serverSources) {
         for (entry in entries) {
             if (entry.isFolder) continue
-            for (match in PortMatcher.matchKinds(entry.name, ports)) {
+            for (match in PortMatcher.matchKinds(entry.name, ports, entry.url)) {
                 matchedPorts.add(match.port.id)
             }
         }
@@ -364,3 +376,4 @@ fun gamesWithFiles(
         .map { it.key }
         .toSet()
 }
+

@@ -10,6 +10,7 @@ import dev.one.launcher.data.PortMatcher
 import dev.one.launcher.data.RemoteEntry
 import dev.one.launcher.data.STAR_CACHE_TTL_MS
 import dev.one.launcher.data.dedupeGameFiles
+import dev.one.launcher.data.displayPlatformName
 import dev.one.launcher.data.gamesWithFiles
 import dev.one.launcher.data.groupPortsByGame
 import dev.one.launcher.data.hintsFromGameTitle
@@ -298,7 +299,12 @@ class GameLibraryTest {
         val games = groupPortsByGame(listOf(eidos))
         val game = games.single()
         val cloud = matchCloudFilesForGame(
-            listOf(PremiumizeItem(name = "Pokemon Black (NDS) (USA)")),
+            listOf(
+                PremiumizeItem(
+                    name = "Pokemon Black (NDS) (USA)",
+                    link = "https://example.com/pokemon-black.zip"
+                )
+            ),
             game.ports
         )
         val server = matchServerFilesForGame(
@@ -306,7 +312,7 @@ class GameLibraryTest {
                 "json" to listOf(
                     RemoteEntry(
                         name = "Pokemon Black (NDS) (USA)",
-                        url = "https://example.com/pokemon-black",
+                        url = "https://example.com/pokemon-black.zip",
                         isFolder = false
                     )
                 )
@@ -400,14 +406,20 @@ class GameLibraryTest {
 
     @Test
     fun eidosMatchesPokemonBlack() {
+        // The real remote.json entry's name has no extension — its URL
+        // ends in ".zip", and that is what the game-file gate reads
+        // (v1.6.1). A bare extension-less name with no URL matches
+        // nothing; see extensionlessNameWithoutUrlDoesNotMatch.
+        val url = "https://example.com/pokemon-black.zip"
         assertEquals(
             MatchKind.NAME_ONLY,
-            PortMatcher.matchKind("Pokemon Black (NDS) (USA)", eidos)
+            PortMatcher.matchKind("Pokemon Black (NDS) (USA)", eidos, url)
         )
         // Only Eidos, across the Pokémon ports in the fixture set.
         val matches = PortMatcher.matchKinds(
             "Pokemon Black (NDS) (USA)",
-            listOf(eidos, arceus, pokopia, acnh, armyMen)
+            listOf(eidos, arceus, pokopia, acnh, armyMen),
+            url
         )
         assertEquals(listOf("eidos"), matches.map { it.port.id })
     }
@@ -472,14 +484,17 @@ class GameLibraryTest {
         // same class of provisional ambiguity the matcher already
         // tolerates, and the match is labeled "name only". No Black 2
         // port exists in the catalog (verified against the live index),
-        // so the file matches Eidos only.
+        // so the file matches Eidos only. The .zip URL is what the
+        // v1.6.1 game-file gate reads — the name has no extension.
+        val url = "https://example.com/pokemon-black-2.zip"
         assertEquals(
             MatchKind.NAME_ONLY,
-            PortMatcher.matchKind("Pokemon Black 2 (NDS) (USA)", eidos)
+            PortMatcher.matchKind("Pokemon Black 2 (NDS) (USA)", eidos, url)
         )
         val matches = PortMatcher.matchKinds(
             "Pokemon Black 2 (NDS) (USA)",
-            listOf(eidos, arceus, pokopia, acnh, armyMen)
+            listOf(eidos, arceus, pokopia, acnh, armyMen),
+            url
         )
         assertEquals(listOf("eidos"), matches.map { it.port.id })
     }
@@ -501,7 +516,7 @@ class GameLibraryTest {
                 "json" to listOf(
                     RemoteEntry(
                         name = "Pokemon Black (NDS) (USA)",
-                        url = "https://example.com/pokemon-black",
+                        url = "https://example.com/pokemon-black.zip",
                         isFolder = false
                     )
                 )
@@ -526,7 +541,7 @@ class GameLibraryTest {
                 "json" to listOf(
                     RemoteEntry(
                         name = "Pokemon Black (NDS) (USA)",
-                        url = "https://example.com/pokemon-black",
+                        url = "https://example.com/pokemon-black.zip",
                         isFolder = false
                     )
                 )
@@ -537,4 +552,169 @@ class GameLibraryTest {
         assertFalse(keys.contains(arceusGame.key))
         assertEquals(1, keys.size)
     }
+
+    // ---- Game-file gate (v1.6.1) ----
+    //
+    // Garrett's v1.6.0 device report: two movie files matched to
+    // games, and the JSON folder was full of non-game entries. The
+    // fixtures below use the live-catalog values verified by
+    // computation against the 2026-11-16 index: both ports have no
+    // accepted formats, so they match only by name — and their names
+    // are shared with the movies that matched them.
+
+    private val tlouRemastered = Port(
+        id = "tlou-remastered",
+        title = "The Last of Us Remastered",
+        game = "The Last of Us Remastered",
+        system = "PlayStation 4",
+        type = "recomp",
+        repo = "erickmendes22/tlou-remastered-android",
+        releasesUrl = "https://github.com/erickmendes22/tlou-remastered-android/releases",
+        fileExtensions = emptyList(),
+        // Hints exactly as hintsFromGameTitle produces: "the"/"of"
+        // are stopwords, "us" is a region/generic token, "remastered"
+        // is a stopword — only "last" and the catalog id remain.
+        // "last" has exactly one owner in the merged catalog, so it
+        // is distinctive — and it is also a common word in movie file
+        // names, which is how the .mkv matched.
+        fileNameHints = listOf("last", "tlou-remastered"),
+        requiredDump = "Your own The Last of Us Remastered files.",
+        platformId = "ps4",
+        platformName = "PlayStation 4",
+        distinctiveNameHints = listOf("last", "tlou-remastered")
+    )
+
+    private val darkKnightRises = Port(
+        id = "thedarkknightrisesrevived",
+        title = "The Dark Knight Rises",
+        game = "The Dark Knight Rises",
+        system = "Other",
+        type = "recomp",
+        repo = "RedMemories/TheDarkKnightRisesRevived",
+        releasesUrl = "https://github.com/RedMemories/TheDarkKnightRisesRevived/releases",
+        fileExtensions = emptyList(),
+        fileNameHints = listOf("dark", "knight", "rises", "thedarkknightrisesrevived"),
+        requiredDump = "Your own The Dark Knight Rises files.",
+        platformId = "other",
+        platformName = "Otra",
+        // Only the catalog id is distinctive: "dark" and "knight"
+        // are shared with other ports in the real catalog, so the
+        // movie matched by the two-hint rule instead.
+        distinctiveNameHints = listOf("thedarkknightrisesrevived")
+    )
+
+    @Test
+    fun lastAirbenderMkvDoesNotMatchTlou() {
+        // Without the gate this matches NAME_ONLY on the distinctive
+        // hint "last" — the exact false positive from Garrett's
+        // v1.6.0 device report. A .mkv is not a game file for any
+        // platform, so the gate rejects it before the hints run.
+        val file = "The Last Airbender (2010).mkv"
+        assertNull(PortMatcher.matchKind(file, tlouRemastered))
+        assertTrue(
+            PortMatcher.matchKinds(
+                file,
+                listOf(tlouRemastered, darkKnightRises, eidos, pokopia)
+            ).isEmpty()
+        )
+    }
+
+    @Test
+    fun darkKnightMkvDoesNotMatchDarkKnightRises() {
+        // Without the gate this matches NAME_ONLY on the two-hint
+        // rule ("dark" + "knight") — the 2008 Batman movie, not the
+        // game. The .mkv gate rejects it first.
+        val file =
+            "The.Dark.Knight.2008.2160p.MAX.WEB-DL.DDP.5.1.DV.HDR.H.265-PiRaTeS.mkv"
+        assertNull(PortMatcher.matchKind(file, darkKnightRises))
+        assertTrue(
+            PortMatcher.matchKinds(
+                file,
+                listOf(tlouRemastered, darkKnightRises, eidos, pokopia)
+            ).isEmpty()
+        )
+    }
+
+    @Test
+    fun extensionlessNameWithoutUrlDoesNotMatch() {
+        // The v1.6.1 gate, stated plainly: a file with no extension
+        // in its name and no URL to read one from can never match —
+        // even when its name hits two of the port's hints. The Eidos
+        // match works because the real remote entry carries a .zip
+        // URL; see eidosMatchesPokemonBlack.
+        assertNull(PortMatcher.matchKind("Pokemon Black (NDS) (USA)", eidos))
+        assertTrue(
+            PortMatcher.matchKinds(
+                "Pokemon Black (NDS) (USA)",
+                listOf(eidos, arceus, pokopia, acnh, armyMen)
+            ).isEmpty()
+        )
+    }
+
+    @Test
+    fun redumpEntryMatchesNothing() {
+        // A Redump/TOSEC index entry has no extension in its name or
+        // its URL (a clean-path download URL) — it is not a game file,
+        // so it matches no port, however many hints its name contains.
+        val entries = listOf(
+            RemoteEntry(
+                name = "Microsoft Xbox - A - Redump",
+                url = "https://example.com/download/microsoft_xbox_a",
+                isFolder = false
+            ),
+            RemoteEntry(
+                name = "[TOSEC-ISO] 3DO",
+                url = "https://example.com/download/tosec_3do",
+                isFolder = false
+            ),
+            RemoteEntry(
+                name = "3DS Content in CIA Format",
+                url = "https://example.com/download/3ds_cia",
+                isFolder = false
+            )
+        )
+        val ports = listOf(eidos, pokopia, soh, tlouRemastered, darkKnightRises)
+        for (port in ports) {
+            assertTrue(
+                "expected no match for ${port.id}",
+                PortMatcher.matchRemoteEntries(entries, port).isEmpty()
+            )
+        }
+        // And the same entries match nothing at the game level either.
+        val games = groupPortsByGame(ports)
+        val server = matchServerFilesForGame(
+            listOf("json" to entries),
+            games.flatMap { it.ports }
+        )
+        assertTrue(server.isEmpty())
+    }
+
+    @Test
+    fun gameLevelMatchingExcludesMkvFiles() {
+        val games = groupPortsByGame(listOf(tlouRemastered, darkKnightRises))
+        val cloud = matchCloudFilesForGame(
+            listOf(
+                PremiumizeItem(name = "The Last Airbender (2010).mkv"),
+                PremiumizeItem(
+                    name = "The.Dark.Knight.2008.2160p.MAX.WEB-DL.DDP.5.1.DV.HDR.H.265-PiRaTeS.mkv"
+                )
+            ),
+            games.flatMap { it.ports }
+        )
+        assertTrue(cloud.isEmpty())
+    }
+
+    @Test
+    fun displayPlatformNameMapsOtherToOther() {
+        assertEquals("Other", displayPlatformName("other", "Otra"))
+        assertEquals("Other", displayPlatformName("Other", "Otra"))
+        assertEquals("Nintendo 64", displayPlatformName("n64", "Nintendo 64"))
+        assertEquals("Nintendo DS", displayPlatformName("ds", "Nintendo DS"))
+        // The game groups under "Other", so the shelf, the game page,
+        // and the platform filter all show it.
+        val games = groupPortsByGame(listOf(darkKnightRises))
+        assertEquals("Other", games.single().platform)
+        assertEquals("The Dark Knight Rises", games.single().title)
+    }
 }
+
