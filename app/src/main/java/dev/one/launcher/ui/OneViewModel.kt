@@ -366,6 +366,20 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     private val _remoteDownloadError = MutableStateFlow<String?>(null)
     val remoteDownloadError: StateFlow<String?> = _remoteDownloadError.asStateFlow()
 
+    /**
+     * Remote listings for the detail page's Server library section:
+     * source id -> file entries (root listing + one level of
+     * subfolders). Fetched once per session per source. The detail
+     * page is the only place these entries are matched to ports.
+     */
+    private val _serverListings = MutableStateFlow<Map<String, List<RemoteEntry>>>(emptyMap())
+    val serverListings: StateFlow<Map<String, List<RemoteEntry>>> =
+        _serverListings.asStateFlow()
+
+    /** Source ids whose server listing is currently being fetched. */
+    private val _serverLoading = MutableStateFlow<Set<String>>(emptySet())
+    val serverLoading: StateFlow<Set<String>> = _serverLoading.asStateFlow()
+
     private val recompaApi = RecompaCatalogApi(application)
     private val remoteFoldersStore = RemoteFoldersStore(application)
     private val remoteCredentials = RemoteFolderCredentials(application)
@@ -985,6 +999,58 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Make sure this port's server files are available for its detail
+     * page: fetch each configured remote folder's listing once per
+     * session and cache the file entries. The detail page matches them
+     * locally with the same matcher the Cloud tab uses, and the detail
+     * page is the only place remote entries are matched to ports.
+     */
+    fun ensureServerFilesFor(port: Port) {
+        _remoteFolders.value.forEach { source ->
+            if (_serverListings.value.containsKey(source.id)) return@forEach
+            if (_serverLoading.value.contains(source.id)) return@forEach
+            _serverLoading.value = _serverLoading.value + source.id
+            viewModelScope.launch(Dispatchers.IO) {
+                val creds = remoteCredentials.load(source.id)
+                val entries = fetchServerEntries(source, creds)
+                withContext(Dispatchers.Main) {
+                    _serverListings.value = _serverListings.value + (source.id to entries)
+                    _serverLoading.value = _serverLoading.value - source.id
+                }
+            }
+        }
+    }
+
+    /**
+     * Blocking — call on Dispatchers.IO. One source's file entries:
+     * its root listing plus one level of subfolder listings (home
+     * servers usually group files in per-game folders). Folders are
+     * dropped — the Server section lists files only. Uses only the
+     * existing listing parser; an unreadable folder is skipped, never
+     * an error for the whole source.
+     */
+    private fun fetchServerEntries(
+        source: RemoteFolderSource,
+        creds: Pair<String, String>?
+    ): List<RemoteEntry> {
+        val root = when (val result =
+            remoteDirectoryApi.fetch(source.url, creds?.first, creds?.second)) {
+            is RemoteListingResult.Listing -> result.entries
+            is RemoteListingResult.Error -> return emptyList()
+        }
+        val files = root.filter { !it.isFolder }.toMutableList()
+        root.filter { it.isFolder }.forEach { folder ->
+            when (val result =
+                remoteDirectoryApi.fetch(folder.url, creds?.first, creds?.second)) {
+                is RemoteListingResult.Listing ->
+                    files += result.entries.filter { !it.isFolder }
+                is RemoteListingResult.Error -> { /* skip that folder */ }
+            }
+        }
+        return files
+    }
+
     // ---- GitHub releases (update manager, detail page only) ----
 
     /**
@@ -1271,6 +1337,8 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             remoteCredentials.clear(source.id)
             remoteFoldersStore.remove(source)
+            _serverListings.value = _serverListings.value - source.id
+            _serverLoading.value = _serverLoading.value - source.id
             if (remoteSource?.id == source.id) {
                 remoteSource = null
                 remoteTrail = emptyList()

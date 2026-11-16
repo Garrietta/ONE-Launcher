@@ -50,6 +50,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -665,6 +666,9 @@ private fun GameDetailContent(
     val cloudFallback by viewModel.cloudFallback.collectAsState()
     val cloudAllLoading by viewModel.cloudAllLoading.collectAsState()
     val cloudAllLoaded by viewModel.cloudAllLoaded.collectAsState()
+    val remoteFolders by viewModel.remoteFolders.collectAsState()
+    val serverListings by viewModel.serverListings.collectAsState()
+    val serverLoading by viewModel.serverLoading.collectAsState()
     val downloadProgress by viewModel.downloadProgress.collectAsState()
     val downloadError by viewModel.downloadError.collectAsState()
     val detectedFiles by viewModel.detectedLocalFiles.collectAsState()
@@ -685,13 +689,23 @@ private fun GameDetailContent(
         }
     }
 
+    // Server files matching this port: each configured remote folder's
+    // cached listing, matched with the same matcher as the Cloud tab.
+    // The detail page is the only place remote entries are matched.
+    val serverMatches = remoteFolders.flatMap { source ->
+        PortMatcher.matchRemoteEntries(serverListings[source.id].orEmpty(), port)
+            .map { (entry, kind) -> Triple(source, entry, kind) }
+    }
+
     // Fetch the latest release when this detail page opens; the ViewModel
     // caches per port for the session, so reopening does not re-hit GitHub.
     // Also make sure this port's cloud files are loaded for the
-    // Premiumize section below.
+    // Premiumize section below, and its server files for the Server
+    // library section.
     LaunchedEffect(port.id) {
         viewModel.fetchRelease(port.id)
         viewModel.ensureCloudFilesFor(port)
+        viewModel.ensureServerFilesFor(port)
     }
 
     var fps by remember(settings) { mutableStateOf(settings.fpsCap) }
@@ -882,6 +896,53 @@ private fun GameDetailContent(
                 Text(text = downloadError!!, color = MaterialTheme.colorScheme.error)
                 TextButton(onClick = { viewModel.dismissDownloadError() }) {
                     Text("Dismiss")
+                }
+            }
+        }
+
+        // ---- Server library: files in the user's own remote folders matching this port ----
+        // Detail page only — remote entries are never matched anywhere
+        // else, and nothing here downloads: the button opens the file's
+        // own URL in the external browser.
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(text = "Server library", style = MaterialTheme.typography.titleSmall)
+        if (remoteFolders.isEmpty()) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Add a remote folder in Settings to see files from your own server here.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        } else if (serverLoading.isNotEmpty() && serverListings.isEmpty()) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Checking your server library…",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        } else if (serverMatches.isEmpty()) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "No file for this port in your server library yet.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        } else {
+            serverMatches.forEach { (source, entry, kind) ->
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Storage, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(text = entry.name, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            text = "${source.name} · ${matchKindLabel(kind)}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                OutlinedButton(onClick = { openUrl(context, entry.url) }) {
+                    Icon(Icons.Filled.OpenInNew, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Open in browser")
                 }
             }
         }

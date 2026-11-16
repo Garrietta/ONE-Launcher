@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.4.3 — 2026-11-16
+
+First release build (signed) — the repo is now private, and CI builds
+a signed release APK (`one-release-apk`) from a keystore generated for
+this round (alias `one-release`; the keystore file is backed up outside
+the repo and the passwords live only in the repo's signing secrets).
+Uninstall the debug APK before installing this one: a release build
+cannot upgrade over a debug build (different signature).
+
+The port detail page gains a third file section, Server library, next
+to Premiumize and Local: files from the remote folders you configured
+that match this port, matched with the same matcher the Cloud tab
+uses. Name-only matches are labeled "name only", same as Cloud. The
+action is Open in browser — it opens the file's own URL in the
+external browser; nothing downloads in ONE from this section. The
+detail page is the only place remote entries are matched to ports:
+Library cards, search, and the home page never see remote files, and
+the remote browser screen itself is unchanged (its display format and
+DownloadManager download still apply there).
+
+- Server section reads each configured remote folder's listing (root
+  plus one level of subfolders — home servers usually group files in
+  per-game folders), fetched once per session with the existing
+  listing parser. No new parsing, no new server shapes, no catalog
+  schema. Folders are never listed as files.
+- Empty states mirror Premiumize: "No file for this port in your
+  server library yet" when nothing matches, and a pointer to Settings
+  when no remote folder is configured.
+
 ## v1.4.2 — 2026-11-16
 
 Garrett's remote folders showed raw file names ("Pokémon Pokopia

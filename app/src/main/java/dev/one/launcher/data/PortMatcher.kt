@@ -175,6 +175,22 @@ object PortMatcher {
         }
 
     /**
+     * Match one remote directory's FILE entries against a port, for the
+     * detail page's Server library section. Folders are never returned:
+     * a folder name can hit a hint, but the section lists files the
+     * user can open in the browser. This is the ONLY place remote
+     * entries are matched to ports — the Library, its search, and the
+     * home page never see remote entries.
+     */
+    fun matchRemoteEntries(
+        entries: List<RemoteEntry>,
+        port: Port
+    ): List<Pair<RemoteEntry, MatchKind>> =
+        entries.filter { !it.isFolder }.mapNotNull { entry ->
+            matchKind(entry.name, port)?.let { entry to it }
+        }
+
+    /**
      * Inspect a .zip already on this device: returns the name of the first
      * entry that matches the port directly (extension + hint), or null when
      * no entry matches or the file cannot be read as a zip. Only the entry
