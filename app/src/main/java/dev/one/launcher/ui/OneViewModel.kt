@@ -490,13 +490,21 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
         // "Games with matches" filter state: the game keys with at
         // least one matching file. Recomputed on a background thread
         // whenever the games or any file source changes, so the filter
-        // is always in sync without blocking the UI.
+        // is always in sync without blocking the UI. The transform's
+        // parameter types are explicit: without them the compiler
+        // resolves this to the vararg combine overload (whose transform
+        // takes a single Array) and cannot infer the parameters.
         viewModelScope.launch {
             combine(
                 _games, _cloudAllFiles, _cloudFallback, _serverListings,
                 _detectedLocalFiles, _portStatuses, _remoteFolders
-            ) { games, cloudFiles, cloudFallback, serverListings,
-                detected, statuses, remoteFolders ->
+            ) { games: List<GameEntry>,
+                cloudFiles: List<PremiumizeItem>,
+                cloudFallback: Map<String, List<PremiumizeItem>>,
+                serverListings: Map<String, List<RemoteEntry>>,
+                detected: Map<String, List<DetectedFile>>,
+                statuses: Map<String, PortStatus>,
+                remoteFolders: List<RemoteFolderSource> ->
                 val serverSources =
                     remoteFolders.map { it.name to serverListings[it.id].orEmpty() }
                 val localStates = games.flatMap { it.ports }.associate { port ->
