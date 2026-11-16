@@ -89,6 +89,24 @@ browse URL (MINERVA_NOINRO_URL, overridable with
 produces the combined 21-folder output. When --minerva is unset,
 no Minerva crawling happens at all (r-roms only).
 
+Region filter (Garrett, 2026-11-16): after the crawl, records are
+deduped per game — one per (category, cleaned title), best region
+first (USA, then EU / another English-speaking region, then a ROM
+that does not specify a country). A game with no English-speaking
+ROM at all (Japan-only, ...) drops out. An entry in an otherwise
+excluded region still counts when it carries an explicit English
+language tag ("(En)"), because the ROM is English-speaking.
+Disc/part tags are part of the dedup key, so a multi-disc game keeps
+every disc. Applies to the r-roms direct links and the Minerva
+magnets alike.
+
+Route discovery percent-encodes category URLs (quote(path,
+safe="/%") + quote(query, safe="=&%")) so a category whose URL has
+a literal space ("Retro & Arcade") actually fetches instead of
+being rejected by urllib — without it, remote.json stays at 35
+r-roms categories instead of 37. Already-encoded "%20" is never
+double-encoded, and plain URLs pass through unchanged.
+
 Standard library only. Python 3.8+.
 """
 
@@ -216,6 +234,20 @@ def discover_category_urls(base_url, index_html):
         if parsed.netloc.lower() != base.netloc.lower():
             continue  # external domain
         resolved = urllib.parse.urldefrag(resolved).url
+        # Percent-encode the path and query: a category URL with a
+        # literal space, e.g. "/Retro & Arcade/retro-games", is
+        # rejected by urllib, so without this those categories never
+        # fetch. safe="/%" keeps "/" and already-encoded "%20"
+        # untouched, so this never double-encodes.
+        parsed = urllib.parse.urlparse(resolved)
+        resolved = urllib.parse.urlunparse((
+            parsed.scheme,
+            parsed.netloc,
+            urllib.parse.quote(parsed.path, safe="/%"),
+            parsed.params,
+            urllib.parse.quote(parsed.query, safe="=&%"),
+            "",
+        ))
         if resolved.rstrip("/") == base_url.rstrip("/"):
             continue  # the index page itself
         if resolved in seen:
@@ -903,6 +935,172 @@ def collect_minerva_records(minerva_args):
             records.extend(sub)
     return records
 # ---------------------------------------------------------------------------
+# Region filter: English-speaking ROMs only, one per game
+# ---------------------------------------------------------------------------
+
+# Region words (lowercased), as they appear in the parenthesised tags
+# of a file name, e.g. "(USA)", "(Europe)", "(USA, Europe)",
+# "(Japan)". A name's region is read from ALL its paren groups (the
+# region is usually the first, but multi-region tags like
+# "(USA, Europe)" and "(Europe, Australia)" are a single group).
+_REGION_USA = frozenset({"usa", "us"})
+_REGION_EU_ENGLISH = frozenset({
+    "europe", "eur", "eu",
+    "uk", "united kingdom", "england",
+    "australia", "aus", "canada", "can",
+    "new zealand", "nz", "ireland", "irl",
+})
+_REGION_EXCLUDED = frozenset({
+    "japan", "jpn", "jp",
+    "korea", "kor", "china", "chn", "taiwan", "tw",
+    "brazil", "bra", "germany", "ger", "de",
+    "france", "fra", "fr", "spain", "spa", "es",
+    "italy", "ita", "it", "russia", "rus",
+    "netherlands", "nld", "nl", "sweden", "swe",
+    "denmark", "dnk", "finland", "fin", "norway", "nor",
+    "poland", "pol", "portugal", "por",
+    "scandinavia", "latin america", "asia",
+})
+
+# Region tiers (Garrett, 2026-11-16): only English-speaking ROMs.
+# USA first, then EU / another English-speaking region, then a ROM
+# that does not specify a country (no region tag, "World",
+# "Unknown"). Anything else (Japan, Korea, Germany, ...) is dropped
+# -- unless it carries an explicit English language tag ("(En)"),
+# which is the data's own statement that the ROM is English, so it
+# counts as an English fallback (tier 1).
+REGION_TIER_USA = 0
+REGION_TIER_EU_ENGLISH = 1
+REGION_TIER_NO_REGION = 2
+
+_DISC_RE = re.compile(r"\b(disc|disk|cd|part)\s*\d+\b", re.IGNORECASE)
+_PAREN_RE = re.compile(r"\(([^()]*)\)")
+_BRACKET_RE = re.compile(r"\[[^\]]*\]")
+_GAME_EXTS = frozenset({
+    "zip", "7z", "rar", "nup", "iso", "rvz", "wux", "gcm", "wbfs",
+    "nsp", "xci", "nds", "3ds", "cia", "gba", "gbc", "gb", "sfc",
+    "smc", "z64", "n64", "v64", "bin", "cue", "chd", "pbp", "pkg",
+    "wad", "xbe", "xex", "nes", "smd", "32x", "sms", "gg",
+})
+
+
+def _has_english_language_tag(name):
+    """True when a parenthesised group is a language list that
+    includes English (e.g. "(En)", "(En,Fr,De)") — a list of
+    two-letter codes containing 'en'. A region tag like "(USA)"
+    or "(EU)" is not a language list, and "(Ja)" has no 'en'."""
+    for group in _PAREN_RE.findall(name or ""):
+        parts = [p.strip().lower() for p in group.split(",")]
+        if parts and all(re.fullmatch(r"[a-z]{2}", p) for p in parts) \
+                and "en" in parts:
+            return True
+    return False
+
+
+def region_tier(name):
+    """The region tier for a record name (0 USA, 1 EU/English,
+    2 no-region), or None when the ROM is not English-speaking.
+    Reads the region from every parenthesised group. A region that
+    is otherwise excluded (Japan, Asia, ...) still counts as tier 1
+    when the name carries an explicit English language tag
+    ("(En)", "(En,Fr,De)") — the ROM is English-speaking."""
+    regions = []
+    for group in _PAREN_RE.findall(name or ""):
+        regions.extend(p.strip().lower() for p in group.split(","))
+    region_set = set(regions)
+    if _REGION_USA & region_set:
+        return REGION_TIER_USA
+    if _REGION_EU_ENGLISH & region_set:
+        return REGION_TIER_EU_ENGLISH
+    if _REGION_EXCLUDED & region_set:
+        if _has_english_language_tag(name):
+            return REGION_TIER_EU_ENGLISH
+        return None
+    return REGION_TIER_NO_REGION
+
+
+def cleaned_title(name):
+    """The dedup key for a record name: the game title with the file
+    extension, bracket tags, and parenthesised tags stripped --
+    except disc/part tags ("(Disc 1)", "(Part 2)"), which are kept
+    (a multi-disc game needs every disc; stripping them would
+    collapse Disc 1..4 into one record — 732 games, 973 discs, in
+    the live data). Lowercased, punctuation folded to spaces, so
+    "PokePark Wii - Pikachu's Adventure (USA).zip" and its Europe
+    twin clean to the same key."""
+    base = name or ""
+    if "." in base:
+        stem, ext = base.rsplit(".", 1)
+        if ext.lower() in _GAME_EXTS:
+            base = stem
+    base = _BRACKET_RE.sub(" ", base)
+
+    def _paren_repl(match):
+        disc = _DISC_RE.search(match.group(1))
+        if disc:
+            return " " + disc.group(0).lower().replace(" ", "") + " "
+        return " "
+
+    base = _PAREN_RE.sub(_paren_repl, base)
+    base = re.sub(r"[^a-z0-9]+", " ", base.lower())
+    return base.strip()
+
+
+def filter_region_records(records):
+    """Per-game region dedup (Garrett, 2026-11-16): group records by
+    (category, cleaned title) and keep one per group — the best
+    region tier (USA, then EU/English, then no-region). A group with
+    no English-speaking record at all (Japan-only, ...) is dropped
+    entirely. Disc/part tags are part of the key, so a multi-disc
+    game keeps every disc. Within the best tier, the base release
+    wins (fewest parenthesised groups, so "Game (USA)" beats
+    "Game (USA) (Beta) ..." and "Game (USA) (Rev 1)"), tie-broken
+    by name. Applies to the r-roms direct links
+    and the Minerva magnets alike. Returns (kept, dropped,
+    tier_counts)."""
+    groups = {}
+    order = []
+    for record in records:
+        key = (
+            record.get("category", ""),
+            cleaned_title(record.get("name", "")),
+        )
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(record)
+    kept = []
+    tier_counts = {
+        REGION_TIER_USA: 0,
+        REGION_TIER_EU_ENGLISH: 0,
+        REGION_TIER_NO_REGION: 0,
+    }
+    for key in order:
+        candidates = []
+        for record in groups[key]:
+            tier = region_tier(record.get("name", ""))
+            if tier is not None:
+                candidates.append((tier, record))
+        if not candidates:
+            continue
+        best_tier = min(tier for tier, _ in candidates)
+        # Within the best tier, the base release wins: the fewest
+        # parenthesised groups (so "Game (USA)" beats
+        # "Game (USA) (Beta) ..." and "Game (USA) (Rev 1)"),
+        # tie-broken by name so the choice is deterministic.
+        best = [
+            record for tier, record in candidates if tier == best_tier
+        ]
+        best.sort(key=lambda r: (
+            len(_PAREN_RE.findall(r.get("name", ""))),
+            r.get("name", "").lower(),
+        ))
+        kept.append(best[0])
+        tier_counts[best_tier] += 1
+    return kept, len(records) - len(kept), tier_counts
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -992,6 +1190,20 @@ def main(argv=None):
                   file=sys.stderr)
             return 1
         records.extend(minerva_records)
+
+    # Region filter (Garrett, 2026-11-16): English-speaking ROMs
+    # only, one per game (best region: USA, then EU/English, then
+    # no-region). Applies to the r-roms direct links and the Minerva
+    # magnets alike. A game with no English ROM at all drops out.
+    records, dropped, tier_counts = filter_region_records(records)
+    print(
+        f"region filter: kept {len(records)} record(s), "
+        f"dropped {dropped} "
+        f"(USA {tier_counts[REGION_TIER_USA]}, "
+        f"EU/English {tier_counts[REGION_TIER_EU_ENGLISH]}, "
+        f"no-region {tier_counts[REGION_TIER_NO_REGION]})",
+        file=sys.stderr,
+    )
 
     # Deduplicate by URL (first occurrence wins), then sort by name.
     seen_urls = set()
