@@ -27,7 +27,19 @@ import java.util.concurrent.TimeUnit
  * isolated screen, and a downloaded file only becomes visible to the
  * app once it lands on disk, through the existing local-folder scan.
  */
-data class RemoteEntry(val name: String, val url: String, val isFolder: Boolean)
+/**
+ * One parsed entry. `sizeBytes` is known only when the server's file
+ * list includes it (the plain JSON shape may carry an optional numeric
+ * `size` field); standard directory listings do not provide one
+ * through this parser, so it stays null there and the browser simply
+ * shows no size.
+ */
+data class RemoteEntry(
+    val name: String,
+    val url: String,
+    val isFolder: Boolean,
+    val sizeBytes: Long? = null
+)
 
 sealed class RemoteListingResult {
     data class Listing(val entries: List<RemoteEntry>) : RemoteListingResult()
@@ -208,7 +220,11 @@ fun parsePlainFileList(feedUrl: String, rawJson: String): RemoteListingResult {
         }
         if (name == null || url == null) return@mapNotNull null
         val resolved = resolveUrl(feedUrl, url) ?: return@mapNotNull null
-        RemoteEntry(name = name, url = resolved, isFolder = false)
+        // Optional numeric size, when the list carries one; anything
+        // else (missing, a string, a negative) means "unknown".
+        val sizePrimitive = item["size"] as? JsonPrimitive
+        val size = sizePrimitive?.longOrNull?.takeIf { it >= 0 }
+        RemoteEntry(name = name, url = resolved, isFolder = false, sizeBytes = size)
     }
     if (entries.isEmpty()) return RemoteListingResult.Error(REMOTE_FOLDER_ERROR)
     return RemoteListingResult.Listing(entries.sortedBy { it.name.lowercase() })

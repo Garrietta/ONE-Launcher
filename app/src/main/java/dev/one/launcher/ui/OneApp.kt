@@ -1,14 +1,18 @@
 package dev.one.launcher.ui
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.widget.Toast
 import androidx.documentfile.provider.DocumentFile
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,6 +33,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
@@ -37,12 +42,15 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -62,6 +70,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -73,6 +82,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -93,11 +104,17 @@ import androidx.navigation.compose.rememberNavController
 import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
 import coil.compose.AsyncImage
+import dev.one.launcher.data.FindReplace
 import dev.one.launcher.data.MatchKind
 import dev.one.launcher.data.PortMatcher
 import dev.one.launcher.data.PortSettings
 import dev.one.launcher.data.PremiumizeItem
+import dev.one.launcher.data.RemoteDisplayFormat
 import dev.one.launcher.data.RemoteEntry
+import dev.one.launcher.data.RemoteFolderSource
+import dev.one.launcher.data.formatRemoteTitle
+import dev.one.launcher.data.parseHiddenExtensions
+import dev.one.launcher.data.shouldShowRemoteEntry
 import dev.one.launcher.model.Port
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -1546,6 +1563,8 @@ private fun SettingsScreen(
     var folderUrl by remember { mutableStateOf("") }
     var folderUser by remember { mutableStateOf("") }
     var folderPass by remember { mutableStateOf("") }
+    /** The source whose display format is being edited, if any. */
+    var formatEditingId by remember { mutableStateOf<String?>(null) }
 
     val pickFolder = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -1783,22 +1802,47 @@ private fun SettingsScreen(
             )
         } else {
             remoteFolders.forEach { source ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        TextButton(onClick = { onOpenRemoteFolder(source.id) }) {
-                            Text(source.name)
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            TextButton(onClick = { onOpenRemoteFolder(source.id) }) {
+                                Text(source.name)
+                            }
+                            Text(
+                                text = Uri.parse(source.url).host ?: source.url,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
-                        Text(
-                            text = Uri.parse(source.url).host ?: source.url,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        IconButton(
+                            onClick = {
+                                formatEditingId =
+                                    if (formatEditingId == source.id) null else source.id
+                            }
+                        ) {
+                            Icon(
+                                Icons.Filled.Tune,
+                                contentDescription = "Display format for ${source.name}"
+                            )
+                        }
+                        IconButton(onClick = { viewModel.removeRemoteFolder(source) }) {
+                            Icon(
+                                Icons.Filled.Delete,
+                                contentDescription = "Delete ${source.name}"
+                            )
+                        }
                     }
-                    IconButton(onClick = { viewModel.removeRemoteFolder(source) }) {
-                        Icon(
-                            Icons.Filled.Delete,
-                            contentDescription = "Delete ${source.name}"
-                        )
+                    if (formatEditingId == source.id) {
+                        key(source.id) {
+                            RemoteDisplayFormatEditor(
+                                source = source,
+                                onSave = { format ->
+                                    viewModel.updateRemoteFolderDisplayFormat(source.id, format)
+                                    formatEditingId = null
+                                },
+                                onCancel = { formatEditingId = null }
+                            )
+                        }
                     }
                 }
             }
@@ -1857,7 +1901,7 @@ private fun SettingsScreen(
 
         Spacer(modifier = Modifier.height(24.dp))
         Text(text = "About", style = MaterialTheme.typography.titleMedium)
-        Text(text = "ONE 1.4.0 (debug build)", style = MaterialTheme.typography.bodyMedium)
+        Text(text = "ONE 1.4.2 (debug build)", style = MaterialTheme.typography.bodyMedium)
         Spacer(modifier = Modifier.height(8.dp))
         TextButton(onClick = { openUrl(context, "https://recompa.app") }) {
             Text(
@@ -1884,6 +1928,161 @@ private fun SettingsScreen(
     }
 }
 
+/**
+ * Per-source display-format editor, shown inline under a remote folder
+ * in Settings. Display only: it reformats how entries are shown in
+ * the browser; the files, the download, and any matching still use
+ * the real file name.
+ */
+@Composable
+private fun RemoteDisplayFormatEditor(
+    source: RemoteFolderSource,
+    onSave: (RemoteDisplayFormat) -> Unit,
+    onCancel: () -> Unit
+) {
+    val format = source.displayFormat
+    var stripBrackets by remember { mutableStateOf(format.stripBrackets) }
+    var stripParens by remember { mutableStateOf(format.stripParens) }
+    var underscoresToSpaces by remember { mutableStateOf(format.underscoresToSpaces) }
+    var showSize by remember { mutableStateOf(format.showSize) }
+    var hideTypes by remember {
+        mutableStateOf(format.hideExtensions.joinToString(", "))
+    }
+    val pairs = remember {
+        mutableStateListOf<FindReplace>().apply { addAll(format.replacements) }
+    }
+    var pairFind by remember { mutableStateOf("") }
+    var pairReplace by remember { mutableStateOf("") }
+
+    Column(modifier = Modifier.padding(start = 8.dp, top = 4.dp, bottom = 12.dp)) {
+        Text(
+            text = "Display format — ${source.name}",
+            style = MaterialTheme.typography.titleSmall
+        )
+        Text(
+            text = "Changes how entries look in the browser only. Files, " +
+                "downloads, and matching still use the real file name; " +
+                "long-press a row in the browser to see it.",
+            style = MaterialTheme.typography.bodySmall
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        FormatSwitchRow("Strip [brackets]", stripBrackets) { stripBrackets = it }
+        FormatSwitchRow("Strip (short tags)", stripParens) { stripParens = it }
+        FormatSwitchRow("Underscores → spaces", underscoresToSpaces) { underscoresToSpaces = it }
+        FormatSwitchRow("Show file size", showSize) { showSize = it }
+        Text(
+            text = "Size shows only when the server's file list includes one.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedTextField(
+            value = hideTypes,
+            onValueChange = { hideTypes = it },
+            label = { Text("Hide file types") },
+            placeholder = { Text("txt, nfo, md") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Text(
+            text = "Comma-separated extensions. Hidden files are not shown " +
+                "in the browser; folders are never hidden.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(text = "Find → replace", style = MaterialTheme.typography.titleSmall)
+        Text(
+            text = "Literal text, applied in order — not patterns. " +
+                "Use it for your own cleanups, e.g. find \"v655360\".",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        pairs.forEachIndexed { index, pair ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "\"${pair.find}\" → \"${pair.replace}\"",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = { pairs.removeAt(index) }) {
+                    Icon(Icons.Filled.Delete, contentDescription = "Remove this replacement")
+                }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = pairFind,
+                onValueChange = { pairFind = it },
+                label = { Text("Find") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            OutlinedTextField(
+                value = pairReplace,
+                onValueChange = { pairReplace = it },
+                label = { Text("Replace with") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(
+                onClick = {
+                    if (pairFind.isNotEmpty()) {
+                        pairs.add(FindReplace(pairFind, pairReplace))
+                        pairFind = ""
+                        pairReplace = ""
+                    }
+                }
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = "Add replacement")
+            }
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+        Row {
+            Button(
+                onClick = {
+                    onSave(
+                        RemoteDisplayFormat(
+                            stripBrackets = stripBrackets,
+                            stripParens = stripParens,
+                            underscoresToSpaces = underscoresToSpaces,
+                            replacements = pairs.toList(),
+                            showSize = showSize,
+                            hideExtensions = parseHiddenExtensions(hideTypes)
+                        )
+                    )
+                }
+            ) {
+                Text("Save format")
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            OutlinedButton(onClick = onCancel) {
+                Text("Cancel")
+            }
+        }
+    }
+}
+
+@Composable
+private fun FormatSwitchRow(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f)
+        )
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
 // ---- Remote folders ----
 
 /**
@@ -1894,10 +2093,14 @@ private fun SettingsScreen(
  */
 @Composable
 private fun RemoteBrowserScreen(viewModel: OneViewModel, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
     val state by viewModel.remoteBrowser.collectAsState()
+    val format by viewModel.remoteBrowserFormat.collectAsState()
     val progress by viewModel.remoteDownloadProgress.collectAsState()
     val downloaded by viewModel.remoteDownloaded.collectAsState()
     val downloadError by viewModel.remoteDownloadError.collectAsState()
+    /** The entry whose real file name is shown in the long-press dialog, if any. */
+    var realNameEntry by remember { mutableStateOf<RemoteEntry?>(null) }
     Column(modifier = modifier.padding(16.dp)) {
         when (val s = state) {
             RemoteBrowserState.Idle -> {
@@ -1944,25 +2147,66 @@ private fun RemoteBrowserScreen(viewModel: OneViewModel, modifier: Modifier = Mo
                         Text("Dismiss")
                     }
                 }
+                // Hide filtering is display only: the parser still read
+                // every entry, and the download still uses the real name.
+                val visibleEntries = s.entries.filter { shouldShowRemoteEntry(it, format) }
                 if (s.entries.isEmpty()) {
                     Text(
                         text = "This folder is empty.",
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.padding(vertical = 8.dp)
                     )
+                } else if (visibleEntries.isEmpty()) {
+                    Text(
+                        text = "All entries in this folder are hidden by this " +
+                            "source's display format.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
                 }
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(s.entries, key = { it.url }) { entry ->
+                    items(visibleEntries, key = { it.url }) { entry ->
                         RemoteBrowserRow(
                             entry = entry,
+                            format = format,
                             progress = progress[entry.url],
                             savedTo = downloaded[entry.url],
                             onOpenFolder = { viewModel.navigateRemoteEntry(entry) },
-                            onDownload = { viewModel.downloadRemoteFile(entry) }
+                            onDownload = { viewModel.downloadRemoteFile(entry) },
+                            onShowRealName = { realNameEntry = it }
                         )
                     }
                 }
             }
+        }
+        val dialogEntry = realNameEntry
+        if (dialogEntry != null) {
+            AlertDialog(
+                onDismissRequest = { realNameEntry = null },
+                title = { Text(if (dialogEntry.isFolder) "Folder name" else "File name") },
+                text = { Text(dialogEntry.name) },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            val clipboard = context.getSystemService(
+                                Context.CLIPBOARD_SERVICE
+                            ) as ClipboardManager
+                            clipboard.setPrimaryClip(
+                                ClipData.newPlainText("File name", dialogEntry.name)
+                            )
+                            Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+                            realNameEntry = null
+                        }
+                    ) {
+                        Text("Copy")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { realNameEntry = null }) {
+                        Text("Close")
+                    }
+                }
+            )
         }
     }
 }
@@ -1970,13 +2214,24 @@ private fun RemoteBrowserScreen(viewModel: OneViewModel, modifier: Modifier = Mo
 @Composable
 private fun RemoteBrowserRow(
     entry: RemoteEntry,
+    format: RemoteDisplayFormat,
     progress: Float?,
     savedTo: String?,
     onOpenFolder: () -> Unit,
-    onDownload: () -> Unit
+    onDownload: () -> Unit,
+    onShowRealName: (RemoteEntry) -> Unit
 ) {
+    // The displayed title is formatted; the download, the folder
+    // navigation, and everything else still use entry.name verbatim.
+    val formatted = formatRemoteTitle(entry.name, entry.isFolder, format)
     Card(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .combinedClickable(
+                onClick = {},
+                onLongClick = { onShowRealName(entry) }
+            ),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant
         )
@@ -1989,17 +2244,38 @@ private fun RemoteBrowserRow(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = entry.name,
+                    text = formatted.title,
                     style = MaterialTheme.typography.bodyMedium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
+                if (formatted.extension != null) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.tertiaryContainer,
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = ".${formatted.extension}",
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
                 if (entry.isFolder) {
                     IconButton(onClick = onOpenFolder) {
                         Icon(Icons.Filled.ChevronRight, contentDescription = "Open folder")
                     }
                 }
+            }
+            if (!entry.isFolder && format.showSize && entry.sizeBytes != null) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = formatSize(entry.sizeBytes),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
             if (!entry.isFolder) {
                 Spacer(modifier = Modifier.height(8.dp))

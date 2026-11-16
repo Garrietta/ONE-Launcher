@@ -41,6 +41,7 @@ import dev.one.launcher.data.RecompaIndex
 import dev.one.launcher.data.RecompaPlatform
 import dev.one.launcher.data.ReleaseResult
 import dev.one.launcher.data.RemoteDirectoryApi
+import dev.one.launcher.data.RemoteDisplayFormat
 import dev.one.launcher.data.RemoteEntry
 import dev.one.launcher.data.RemoteFolderCredentials
 import dev.one.launcher.data.RemoteFolderSource
@@ -343,6 +344,15 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     private val _remoteBrowser = MutableStateFlow<RemoteBrowserState>(RemoteBrowserState.Idle)
     val remoteBrowser: StateFlow<RemoteBrowserState> = _remoteBrowser.asStateFlow()
 
+    /**
+     * Display format of the source open in the remote browser.
+     * Display only — the browser's entries are the parser's entries;
+     * this only reformats how they are shown.
+     */
+    private val _remoteBrowserFormat = MutableStateFlow(RemoteDisplayFormat())
+    val remoteBrowserFormat: StateFlow<RemoteDisplayFormat> =
+        _remoteBrowserFormat.asStateFlow()
+
     /** Download progress for remote files, keyed by entry URL (0f..1f). */
     private val _remoteDownloadProgress = MutableStateFlow<Map<String, Float>>(emptyMap())
     val remoteDownloadProgress: StateFlow<Map<String, Float>> =
@@ -393,7 +403,17 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
         }
         // Keep the user-configured remote folder sources in state.
         viewModelScope.launch {
-            remoteFoldersStore.sources.collect { _remoteFolders.value = it }
+            remoteFoldersStore.sources.collect { sources ->
+                _remoteFolders.value = sources
+                // The open source may have had its display format edited
+                // while the browser is open — follow the stored source.
+                remoteSource?.let { open ->
+                    sources.firstOrNull { it.id == open.id }?.let { updated ->
+                        remoteSource = updated
+                        _remoteBrowserFormat.value = updated.displayFormat
+                    }
+                }
+            }
         }
         // Restore a saved Premiumize session, if the user linked one before.
         if (secureKeyStore.getApiKey() != null) {
@@ -1255,7 +1275,20 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
                 remoteSource = null
                 remoteTrail = emptyList()
                 _remoteBrowser.value = RemoteBrowserState.Idle
+                _remoteBrowserFormat.value = RemoteDisplayFormat()
             }
+        }
+    }
+
+    /**
+     * Save one source's display format. Display only — it never
+     * touches the source's URL or credentials, and the browser's
+     * entries are unchanged; the stored source flows back through the
+     * collect above, so the browser picks the new format up live.
+     */
+    fun updateRemoteFolderDisplayFormat(sourceId: String, format: RemoteDisplayFormat) {
+        viewModelScope.launch {
+            remoteFoldersStore.updateDisplayFormat(sourceId, format)
         }
     }
 
@@ -1267,6 +1300,7 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     fun openRemoteFolder(sourceId: String) {
         val source = _remoteFolders.value.firstOrNull { it.id == sourceId } ?: return
         remoteSource = source
+        _remoteBrowserFormat.value = source.displayFormat
         remoteTrail = listOf(RemoteTrailItem(source.url, source.name))
         fetchRemoteUrl(source.url)
     }

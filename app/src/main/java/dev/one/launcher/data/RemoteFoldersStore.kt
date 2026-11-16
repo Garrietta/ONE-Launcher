@@ -13,7 +13,13 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 @Serializable
-data class RemoteFolderSource(val id: String, val name: String, val url: String)
+data class RemoteFolderSource(
+    val id: String,
+    val name: String,
+    val url: String,
+    /** Per-source display format for the browser; defaults keep the raw names. */
+    val displayFormat: RemoteDisplayFormat = RemoteDisplayFormat()
+)
 
 /**
  * User-configured remote folder sources, stored only on this device in
@@ -48,6 +54,16 @@ class RemoteFoldersStore(private val context: Context) {
     suspend fun remove(source: RemoteFolderSource) {
         context.portSettingsDataStore.edit { prefs ->
             prefs[key] = json.encodeToString(decode(prefs[key]) - source)
+        }
+    }
+
+    /** Replace one source's display format, leaving its name, URL, and credentials alone. */
+    suspend fun updateDisplayFormat(sourceId: String, format: RemoteDisplayFormat) {
+        context.portSettingsDataStore.edit { prefs ->
+            val updated = decode(prefs[key]).map { source ->
+                if (source.id == sourceId) source.copy(displayFormat = format) else source
+            }
+            prefs[key] = json.encodeToString(updated)
         }
     }
 }

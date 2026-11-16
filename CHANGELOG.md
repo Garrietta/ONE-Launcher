@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.4.2 — 2026-11-16
+
+Garrett's remote folders showed raw file names ("Pokémon Pokopia
+[0400A3A01EE4C000][v655360].nup") — an arbitrary string plus a download
+link, with no way to make the list legible. This adds a per-source
+display format for remote folders. Display only: the parser reads the
+server exactly as before (standard directory listing / plain
+[{name, url}] JSON — no new parsing, no HTML/CSS handling), the
+download and any matching still use the real file name, and the
+original name stays reachable by long-pressing a row.
+
+- Per-source display format (Settings → Remote folders → tune icon on
+  a source): strip "[...]" segments, strip short "(...)" tags (longer
+  parentheticals are kept as part of the title), underscores → spaces,
+  literal find → replace pairs applied in order, whitespace collapse
+  and trim. The file extension is shown as its own small chip after
+  the clean title, never as part of it.
+- Hide file types: a comma-separated extension list (e.g. "txt, nfo,
+  md") hides those files from the browser. Display filtering only —
+  the parser still reads them, and folders are never hidden.
+- Show file size toggle (default on): the size shows under the title
+  when the server's file list includes one (the plain JSON shape may
+  carry an optional numeric `size` field); standard directory listings
+  do not provide one through the current parser, so nothing shows
+  there. A row whose rules strip the whole title falls back to the
+  original name, so it never renders blank.
+- Long-press any browser row to see the real file name, with a Copy
+  button. The format is stored per source with the source itself, so
+  different folders can have different naming conventions.
+
 ## v1.4.1 — 2026-11-16
 
 Device feedback on v1.4.0: a "Pokémon Pokopia [0400A3A01EE4C000][v655360].nup"

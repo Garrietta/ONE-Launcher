@@ -110,6 +110,25 @@ class RemoteDirectoryTest {
     }
 
     @Test
+    fun plainFileListReadsOptionalSize() {
+        val feed = """
+            [
+              {"name": "a.zip", "url": "http://192.168.1.10/a.zip", "size": 123},
+              {"name": "b.bin", "url": "/b.bin"},
+              {"name": "c.bin", "url": "/c.bin", "size": "big"},
+              {"name": "d.bin", "url": "/d.bin", "size": -5}
+            ]
+        """.trimIndent()
+        val result = parsePlainFileList("http://192.168.1.10/list.json", feed)
+        assertTrue(result is RemoteListingResult.Listing)
+        val entries = (result as RemoteListingResult.Listing).entries
+        assertEquals(123L, entries[0].sizeBytes)
+        assertNull(entries[1].sizeBytes)
+        assertNull(entries[2].sizeBytes)
+        assertNull(entries[3].sizeBytes)
+    }
+
+    @Test
     fun plainFileListSkipsEntriesMissingNameOrUrl() {
         val feed = """
             [
