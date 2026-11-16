@@ -10,6 +10,7 @@ import dev.one.launcher.data.parsePlainFileList
 import dev.one.launcher.data.parseRemoteBody
 import okhttp3.Credentials
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
