@@ -53,7 +53,9 @@ class GameLibraryTest {
         fileExtensions = emptyList(),
         fileNameHints = listOf("pokemon", "black", "white", "eidos"),
         requiredDump = "Pokémon Black or White ROM (DS)",
-        distinctiveNameHints = listOf("eidos")
+        distinctiveNameHints = listOf("eidos"),
+        platformId = "ds",
+        platformName = "Nintendo DS"
     )
 
     private val pokopia = Port(
@@ -67,7 +69,9 @@ class GameLibraryTest {
         fileExtensions = emptyList(),
         fileNameHints = listOf("pokopia", "banananative-compilationfix"),
         requiredDump = "Your Switch 2 game dump as a folder (with base/)",
-        distinctiveNameHints = listOf("pokopia", "banananative-compilationfix")
+        distinctiveNameHints = listOf("pokopia", "banananative-compilationfix"),
+        platformId = "switch2",
+        platformName = "Switch 2"
     )
 
     private val arceus = Port(
@@ -442,6 +446,26 @@ class GameLibraryTest {
             url
         )
         assertEquals(listOf("eidos"), matches.map { it.port.id })
+    }
+
+    @Test
+    fun eidosBlockedByConflictingPlatformTag() {
+        // Platform-consistency gate (v1.8.1): a Pokemon Black file
+        // tagged for another platform (GBA) is not Eidos's file,
+        // even though the title and hints match — without the gate
+        // it would match NAME_ONLY (similarity 1.0, two hints).
+        val url = "https://example.com/pokemon-black-gba.zip"
+        assertNull(
+            PortMatcher.matchKind("Pokemon Black (GBA) (USA)", eidos, url)
+        )
+        // The same file tagged for Eidos's own platform still matches.
+        assertEquals(
+            MatchKind.NAME_ONLY,
+            PortMatcher.matchKind(
+                "Pokemon Black (NDS) (USA)", eidos,
+                "https://example.com/pokemon-black.zip"
+            )
+        )
     }
 
     @Test

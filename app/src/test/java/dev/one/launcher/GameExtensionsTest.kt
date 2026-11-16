@@ -11,7 +11,9 @@ import dev.one.launcher.data.isArchiveExtension
 import dev.one.launcher.data.isGameFile
 import dev.one.launcher.data.isGameFileExtension
 import dev.one.launcher.data.isGameFileRemoteEntry
+import dev.one.launcher.data.isPlatformConsistent
 import dev.one.launcher.data.parsePlainFileList
+import dev.one.launcher.data.platformTagFromFileName
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -270,5 +272,113 @@ class GameExtensionsTest {
         assertTrue(shown.none { it.name == "MyAbandonware" })
         assertTrue(shown.none { it.name == "Firmwares" })
         assertTrue(shown.none { it.name == "Minerva Minerva Torrent Index" })
+    }
+
+    // ---- Filename platform tags (v1.8.1) ----
+
+    @Test
+    fun platformTagFromFileNameExtractsKnownTags() {
+        assertEquals(
+            "wiiu",
+            platformTagFromFileName("Legend of Zelda Breath of the Wild (Wii U) (USA)")
+        )
+        assertEquals("ds", platformTagFromFileName("Pokemon Black (NDS) (USA)"))
+        assertEquals("switch", platformTagFromFileName("Game (Switch) (USA)"))
+        assertEquals("gb", platformTagFromFileName("Pokemon Blue (GB) (USA)"))
+        assertEquals("gamecube", platformTagFromFileName("Mario Kart Double Dash (GC) (USA)"))
+        assertEquals("ps2", platformTagFromFileName("Game (PS2) (USA)"))
+        assertEquals("xbox360", platformTagFromFileName("Game (X360) (USA)"))
+        assertEquals("3ds", platformTagFromFileName("Game (3DS) (USA)"))
+        assertEquals("switch2", platformTagFromFileName("Game (Switch 2) (USA)"))
+        assertEquals("mastersystem", platformTagFromFileName("Game (Master System) (USA)"))
+        assertEquals("genesis", platformTagFromFileName("Game (Mega Drive) (USA)"))
+        assertEquals("psvita", platformTagFromFileName("Game (PS Vita) (USA)"))
+        // A region tag before the platform tag does not hide it.
+        assertEquals("wiiu", platformTagFromFileName("Game (USA) (Wii U)"))
+        // Full platform names map too.
+        assertEquals("ds", platformTagFromFileName("Game (Nintendo DS) (USA)"))
+        assertEquals("ps1", platformTagFromFileName("Game (PlayStation) (USA)"))
+    }
+
+    @Test
+    fun platformTagFromFileNameSkipsNonPlatformTags() {
+        assertNull(platformTagFromFileName("The Legend of Zelda - Ocarina of Time (USA).z64"))
+        // "(SAT)" is not a verified tag — the catalog has no
+        // "saturn" platform id — so it is ignored, never a veto.
+        assertNull(platformTagFromFileName("Game (SAT) (USA)"))
+        assertNull(platformTagFromFileName("Game (Disc 1) (USA)"))
+        assertNull(platformTagFromFileName("Game (En,Fr,De) (USA)"))
+        assertNull(platformTagFromFileName("Game (Japan) (USA)"))
+        assertNull(platformTagFromFileName("Pokémon Pokopia [0400A3A01EE4C000][v655360].nup"))
+        assertNull(platformTagFromFileName("Game.zip"))
+        assertNull(platformTagFromFileName(""))
+    }
+
+    @Test
+    fun platformConsistencyBlocksConflictAndPassesMatch() {
+        assertFalse(isPlatformConsistent("Game (Wii U) (USA)", "switch"))
+        assertTrue(isPlatformConsistent("Game (Switch) (USA)", "switch"))
+        assertTrue(isPlatformConsistent("Game (USA)", "switch"))
+        assertTrue(isPlatformConsistent("Game.zip", "switch"))
+        // Unknown platform: the check does not apply.
+        assertTrue(isPlatformConsistent("Game (Wii U) (USA)", null))
+        assertTrue(isPlatformConsistent("Game (Wii U) (USA)", ""))
+        assertTrue(isPlatformConsistent("Game (Wii U) (USA)", "other"))
+        // Unrecognized tag: does not block.
+        assertTrue(isPlatformConsistent("Game (SAT) (USA)", "switch"))
+        // The URL carries the tag when the name does not.
+        assertFalse(
+            isPlatformConsistent(
+                "Game", "switch",
+                fileUrl = "https://example.com/Game%20(Wii%20U).zip"
+            )
+        )
+        assertTrue(
+            isPlatformConsistent(
+                "Game", "switch",
+                fileUrl = "https://example.com/Game%20(Switch).zip"
+            )
+        )
+        // A folder name in the URL is not read — only the last
+        // path segment is.
+        assertTrue(
+            isPlatformConsistent(
+                "Game", "switch",
+                fileUrl = "https://example.com/wii-u-retail-nus-usa/Game.7z"
+            )
+        )
+    }
+
+    @Test
+    fun platformTagExcludesGroupsFromTheGameTitle() {
+        // "James Pond 2: Robocod (Amiga)" is an N64 port of an
+        // Amiga game — the "(Amiga)" in a file named after it is
+        // the title talking, not the file, so it must not veto.
+        assertTrue(
+            isPlatformConsistent(
+                "James Pond 2: Robocod (Amiga).zip", "n64",
+                "James Pond 2: Robocod (Amiga)"
+            )
+        )
+        // But a real file tag after the title's group still vetoes:
+        // "Tyrian (DOS) (Wii U)" is a Wii U file, and the "(Wii U)"
+        // after the title's "(DOS)" is the tag that says so.
+        assertFalse(
+            isPlatformConsistent(
+                "Tyrian (DOS) (Wii U).zip", "dos", "Tyrian (DOS)"
+            )
+        )
+        assertFalse(
+            isPlatformConsistent(
+                "Super Mario All-Stars (SNES) (Wii U).zip", "snes",
+                "Super Mario All-Stars (SNES)"
+            )
+        )
+        // And a file whose only tag is the title's own still matches.
+        assertTrue(
+            isPlatformConsistent(
+                "Tyrian (DOS).zip", "dos", "Tyrian (DOS)"
+            )
+        )
     }
 }

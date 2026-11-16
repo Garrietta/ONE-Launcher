@@ -28,6 +28,8 @@ class PortMatcherTest {
         packageNames = listOf("com.linkzenic.soh"),
         fileExtensions = listOf(".z64", ".n64", ".v64"),
         fileNameHints = listOf("zelootd", "oot", "ocarina"),
+        platformId = "n64",
+        platformName = "Nintendo 64",
         requiredDump = "Your own Ocarina of Time ROM (.z64)."
     )
 
@@ -166,6 +168,8 @@ class PortMatcherTest {
         // Both hints are distinctive in the real catalog: no other
         // port's hint set contains either.
         distinctiveNameHints = listOf("pokopia", "banananative-compilationfix"),
+        platformId = "switch2",
+        platformName = "Switch 2",
         requiredDump = "Your Switch 2 game dump as a folder (with base/)."
     )
 
@@ -466,6 +470,110 @@ class PortMatcherTest {
         assertTrue(shock.distinctiveNameHints.contains("system"))
         assertNull(
             PortMatcher.matchKind("Sega - Master System - Mark III.zip", shock)
+        )
+    }
+
+    // ---- Platform-consistency gate (v1.8.1) ----
+    //
+    // Garrett's 2026-11-16 report: Breath of the Wild (Switch)
+    // matched "Legend of Zelda Breath of the Wild (Wii U) (USA)"
+    // (json · name only). The file is a .7z archive, so the v1.6.1
+    // gate treats it as platform-agnostic, and the titles are
+    // identical (similarity 1.0) — only the "(Wii U)" tag tells
+    // them apart. A file tagged for a different platform than the
+    // port's must never match, on any match kind.
+
+    // Mirrors the real catalog entry for Breath of the Wild
+    // (Switch): no catalog formats, so it matches by name only.
+    // Hints as hintsFromGameTitle produces.
+    private val botw = Port(
+        id = "breath-of-the-wild",
+        title = "The Legend of Zelda: Breath of the Wild",
+        game = "The Legend of Zelda: Breath of the Wild",
+        system = "Switch",
+        type = "Recompilation",
+        repo = "example/botw",
+        releasesUrl = "https://github.com/example/botw/releases",
+        packageNames = emptyList(),
+        fileExtensions = emptyList(),
+        fileNameHints = listOf("breath", "wild", "breath-of-the-wild"),
+        distinctiveNameHints = listOf("breath", "wild", "breath-of-the-wild"),
+        platformId = "switch",
+        platformName = "Switch",
+        requiredDump = "Your own Breath of the Wild game dump."
+    )
+
+    @Test
+    fun wiiUFileDoesNotMatchSwitchBotw() {
+        // The exact file from Garrett's report: the name carries
+        // "(Wii U)", the URL is the archive.org Wii U retail .7z.
+        // The similarity gate alone cannot save this one (the
+        // titles are identical, 1.0) — the platform tag must block
+        // it.
+        val url = "https://archive.org/download/wii-u-retail-nus-usa/" +
+            "The%20Legend%20of%20Zelda%20Breath%20of%20the%20Wild%20" +
+            "%5B00050000101C9400%5D.7z"
+        assertNull(
+            PortMatcher.matchKind(
+                "Legend of Zelda Breath of the Wild (Wii U) (USA)", botw, url
+            )
+        )
+        // Without the tag, the same file WOULD match — the platform
+        // check is what blocks it, not the similarity gate. (The
+        // URL's folder name "wii-u-retail-nus-usa" is not read: only
+        // the last path segment is, and it carries no tag.)
+        assertEquals(
+            MatchKind.NAME_ONLY,
+            PortMatcher.matchKind(
+                "Legend of Zelda Breath of the Wild (USA)", botw, url
+            )
+        )
+    }
+
+    @Test
+    fun matchingPlatformTagStillMatches() {
+        // A file tagged for the port's own platform still matches,
+        // and a region-only tag never blocks: "(USA)" is a region,
+        // not a platform.
+        val url = "https://example.com/botw-switch.7z"
+        assertEquals(
+            MatchKind.NAME_ONLY,
+            PortMatcher.matchKind(
+                "The Legend of Zelda Breath of the Wild (Switch) (USA)", botw, url
+            )
+        )
+        assertEquals(
+            MatchKind.NAME_ONLY,
+            PortMatcher.matchKind(
+                "The Legend of Zelda Breath of the Wild (USA)", botw, url
+            )
+        )
+    }
+
+    @Test
+    fun directMatchBlockedByConflictingPlatformTag() {
+        // The platform check applies to DIRECT too, not just
+        // NAME_ONLY: a .z64 tagged for another platform is not this
+        // port's file, however well the extension and hint fit.
+        assertNull(PortMatcher.matchKind("Ocarina of Time (Wii U).z64", oot))
+        assertFalse(PortMatcher.matches("Ocarina of Time (Wii U).z64", oot))
+        // The same file without the tag still matches directly.
+        assertEquals(MatchKind.DIRECT, PortMatcher.matchKind("Ocarina of Time.z64", oot))
+    }
+
+    @Test
+    fun unrecognizedPlatformTagDoesNotBlock() {
+        // "(SAT)" is not a verified platform tag (the catalog has no
+        // "saturn" platform id), so it must not block a match — an
+        // unrecognized tag is ignored, never a veto. A made-up tag
+        // is ignored the same way.
+        assertEquals(
+            MatchKind.ARCHIVE_PROVISIONAL,
+            PortMatcher.matchKind("Ocarina of Time (SAT).zip", oot)
+        )
+        assertEquals(
+            MatchKind.ARCHIVE_PROVISIONAL,
+            PortMatcher.matchKind("Ocarina of Time (XYZ).zip", oot)
         )
     }
 

@@ -1,5 +1,39 @@
 # Changelog
 
+## v1.8.1 — 2026-11-16
+
+Platform consistency for file matching. A file whose name carries
+a parenthesized platform tag for a different platform than the
+game's — "(Wii U)" on a Switch port's file — never matches, on any
+match kind (DIRECT, ARCHIVE_*, NAME_ONLY). The tag is read from the
+file name, falling back to the URL's last path segment when the name
+has none; a file with no recognizable platform tag, and a port whose
+platform is unknown, are unaffected. Region tags (USA, EUR, JPN)
+are not platform tags and never block, and neither do bracketed
+groups ([0400...] title IDs). A parenthesized group that appears in
+the game's own title is excluded — it is the title talking, not
+the file: "James Pond 2: Robocod (Amiga)" is an N64 port of an
+Amiga game and a file named after it still matches, while a real
+file tag after the title's group ("Tyrian (DOS) (Wii U)") still
+vetoes. Verified over the full merged catalog (536 ports): no
+previously-matching true positive is lost, and 371 wrong-platform
+files that used to match are now blocked. Upgrades in place over
+the v1.8.0 release build (same signature).
+
+- Matcher (GameExtensions, PortMatcher): PLATFORM_FILENAME_TAGS
+  maps common filename platform tags to the Recompa catalog's
+  platform ids (Wii U → wiiu, NDS → ds, Switch → switch, GC →
+  gamecube, X360 → xbox360, and the rest of the 28 catalog ids);
+  "(SAT)" is deliberately unmapped — the catalog has no saturn
+  platform id. platformTagFromFileName / platformTagFromUrl /
+  isPlatformConsistent are pure and unit-tested; the check is a
+  precondition in matches() and matchKind(), like the v1.6.1
+  game-file gate.
+- Fixes: Breath of the Wild (Switch) no longer pairs with the
+  "Legend of Zelda Breath of the Wild (Wii U) (USA)" .7z. Eidos
+  still matches "Pokemon Black (NDS) (USA)", Pokopia still matches
+  its .nup, OoT still matches its .z64.
+
 ## v1.8.0 — 2026-11-16
 
 Magnet links, from Minerva. A remote folder's JSON can now carry

@@ -83,6 +83,16 @@ data class PortMatch(
  * ARCHIVE_*, NAME_ONLY); it does not replace the hint/extension
  * logic below it.
  *
+ * Next, the file's platform tag must agree with the port's platform
+ * ([isPlatformConsistent], v1.8.1): a file whose name carries a
+ * parenthesized system tag for a different platform than the game's
+ * — "(Wii U)" on a Switch port's file — never matches, on any match
+ * kind. Archives are platform-agnostic as containers, but the tag
+ * on the archive's name still names the system its contents are
+ * for. A file with no recognizable platform tag, and a port whose
+ * platform is unknown, are unaffected — the check only vetoes a
+ * positive conflict.
+ *
  * Archives (.zip, .7z, .rar) are matched on name only: an archive matches
  * a port when its base name (minus the extension) contains one of the
  * port's hints. A .zip that is already on this device can be confirmed by
@@ -174,6 +184,11 @@ object PortMatcher {
 
     fun matches(fileName: String, port: Port, fileUrl: String? = null): Boolean {
         if (!isGameFileForPort(fileName, port, fileUrl)) return false
+        // The platform-consistency check (v1.8.1): a file tagged for
+        // a different platform than the port's never matches,
+        // however identical the title and however well the extension
+        // fits — a Wii U release is not the Switch port's file.
+        if (!isPlatformConsistent(fileName, port.platformId, port.game, fileUrl)) return false
         // No file info (e.g. a catalog port whose assets[] is missing):
         // matching is disabled rather than guessed.
         if (port.fileExtensions.isEmpty()) return false
@@ -205,7 +220,10 @@ object PortMatcher {
      * File to [inspectZip] for that.
      *
      * The game-file gate runs first (v1.6.1): a file that is not a
-     * game file returns null here, whatever its name contains.
+     * game file returns null here, whatever its name contains. The
+     * platform-consistency check (v1.8.1) runs next: a file tagged
+     * for a different platform than the port's returns null here too,
+     * on every match kind — NAME_ONLY, DIRECT, and ARCHIVE alike.
      * [fileUrl] carries the extension when the name does not — a
      * remote entry's name is often extension-less while its URL ends
      * in ".zip/"; either side saying "game file" is enough, so a
@@ -233,6 +251,12 @@ object PortMatcher {
         // The game-file gate first: a non-game file matches nothing,
         // whatever its name contains.
         if (!isGameFileForPort(fileName, port, fileUrl)) return null
+        // The platform-consistency check (v1.8.1): a file tagged for
+        // a different platform than the port's never matches, on any
+        // match kind — the game-file gate above cannot save an
+        // archive whose title is identical but whose tag names
+        // another system (a Wii U .7z is not a Switch port's file).
+        if (!isPlatformConsistent(fileName, port.platformId, port.game, fileUrl)) return null
         if (matches(fileName, port, fileUrl)) return MatchKind.DIRECT
         if (port.fileExtensions.isEmpty()) {
             // No formats in the catalog for this port: match on the
