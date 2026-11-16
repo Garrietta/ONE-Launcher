@@ -113,7 +113,12 @@ import androidx.navigation.compose.rememberNavController
 import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
 import coil.compose.AsyncImage
+import dev.one.launcher.data.DetectedFile
 import dev.one.launcher.data.FindReplace
+import dev.one.launcher.data.GameEntry
+import dev.one.launcher.data.GameFile
+import dev.one.launcher.data.GameFileSource
+import dev.one.launcher.data.LocalFileState
 import dev.one.launcher.data.MatchKind
 import dev.one.launcher.data.PortMatcher
 import dev.one.launcher.data.PortSettings
@@ -121,8 +126,13 @@ import dev.one.launcher.data.PremiumizeItem
 import dev.one.launcher.data.RemoteDisplayFormat
 import dev.one.launcher.data.RemoteEntry
 import dev.one.launcher.data.RemoteFolderSource
+import dev.one.launcher.data.dedupeGameFiles
 import dev.one.launcher.data.formatRemoteTitle
+import dev.one.launcher.data.matchCloudFilesForGame
+import dev.one.launcher.data.matchLocalFilesForGame
+import dev.one.launcher.data.matchServerFilesForGame
 import dev.one.launcher.data.parseHiddenExtensions
+import dev.one.launcher.data.rankPortsByStars
 import dev.one.launcher.data.shouldShowRemoteEntry
 import dev.one.launcher.model.Port
 import java.text.SimpleDateFormat
@@ -174,7 +184,8 @@ fun OneApp(viewModel: OneViewModel) {
                     destinations.forEach { dest ->
                         val selected = currentRoute == dest.route ||
                             (dest == OneDestination.Library &&
-                                currentRoute?.startsWith("detail/") == true) ||
+                                (currentRoute?.startsWith("detail/") == true ||
+                                    currentRoute?.startsWith("game/") == true)) ||
                             (dest == OneDestination.Settings &&
                                 currentRoute?.startsWith("remote/") == true)
                         NavigationBarItem(
@@ -202,7 +213,8 @@ fun OneApp(viewModel: OneViewModel) {
                     destinations.forEach { dest ->
                         val selected = currentRoute == dest.route ||
                             (dest == OneDestination.Library &&
-                                currentRoute?.startsWith("detail/") == true) ||
+                                (currentRoute?.startsWith("detail/") == true ||
+                                    currentRoute?.startsWith("game/") == true)) ||
                             (dest == OneDestination.Settings &&
                                 currentRoute?.startsWith("remote/") == true)
                         NavigationRailItem(
@@ -231,6 +243,10 @@ fun OneApp(viewModel: OneViewModel) {
                     LibraryScreen(
                         viewModel = viewModel,
                         unfolded = unfolded,
+                        onSelectGame = { viewModel.selectGame(it) },
+                        onOpenGame = { key ->
+                            if (!unfolded) navController.navigate("game/$key")
+                        },
                         onOpenDetail = { id ->
                             if (unfolded) {
                                 viewModel.selectPort(id)
@@ -238,6 +254,7 @@ fun OneApp(viewModel: OneViewModel) {
                                 navController.navigate("detail/$id")
                             }
                         },
+                        onPlay = { viewModel.launchPort(it) },
                         onGoToCloud = {
                             navController.navigate(OneDestination.Cloud.route) {
                                 launchSingleTop = true
@@ -266,6 +283,39 @@ fun OneApp(viewModel: OneViewModel) {
                         GameDetailContent(
                             viewModel = viewModel,
                             port = port,
+                            onGoToCloud = {
+                                navController.navigate(OneDestination.Cloud.route) {
+                                    launchSingleTop = true
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(innerPadding)
+                        )
+                    }
+                }
+                composable("game/{gameKey}") { entry ->
+                    val key = entry.arguments?.getString("gameKey") ?: return@composable
+                    val game = viewModel.gameByKey(key) ?: return@composable
+                    Scaffold(
+                        topBar = {
+                            TopAppBar(
+                                title = { Text(game.title) },
+                                navigationIcon = {
+                                    IconButton(onClick = { navController.popBackStack() }) {
+                                        Icon(
+                                            Icons.Filled.ArrowBack,
+                                            contentDescription = "Back"
+                                        )
+                                    }
+                                }
+                            )
+                        }
+                    ) { innerPadding ->
+                        GamePageContent(
+                            viewModel = viewModel,
+                            game = game,
+                            onOpenDetail = { id -> navController.navigate("detail/$id") },
                             onGoToCloud = {
                                 navController.navigate(OneDestination.Cloud.route) {
                                     launchSingleTop = true
@@ -344,33 +394,45 @@ fun OneApp(viewModel: OneViewModel) {
 private fun LibraryScreen(
     viewModel: OneViewModel,
     unfolded: Boolean,
+    onSelectGame: (String) -> Unit,
+    onOpenGame: (String) -> Unit,
     onOpenDetail: (String) -> Unit,
+    onPlay: (String) -> Unit,
     onGoToCloud: () -> Unit
 ) {
     val statuses by viewModel.portStatuses.collectAsState()
-    val selectedId by viewModel.selectedPortId.collectAsState()
+    val selectedPortId by viewModel.selectedPortId.collectAsState()
+    val selectedGameKey by viewModel.selectedGameKey.collectAsState()
     val cloudFiles by viewModel.cloudAllFiles.collectAsState()
     val ports by viewModel.portsFlow.collectAsState()
+    val games by viewModel.gamesFlow.collectAsState()
+    val gamesWithFiles by viewModel.gamesWithFilesFlow.collectAsState()
     val catalogState by viewModel.catalogState.collectAsState()
-    val catalogPlatforms by viewModel.catalogPlatforms.collectAsState()
 
-    // Search + platform filter: the catalog is 500+ ports now, so the
-    // Library filters by title/game name and by original platform.
+    // Search + platform filter: the Library is games now, so it
+    // filters by game title (or a port title inside a game) and by
+    // platform. The platform options come from the games themselves,
+    // so a curated-only port's platform ("Super Nintendo") and its
+    // catalog sibling's platform name always agree. "Has files" is a
+    // third, additional filter: only games with at least one matching
+    // file (local, cloud, or server). Off by default.
     var query by remember { mutableStateOf("") }
     var platformFilter by remember { mutableStateOf("") } // "" = All
-    val platformOptions = remember(ports, catalogPlatforms) {
-        val present = ports.map { it.platformId }.toSet()
-        catalogPlatforms
-            .filter { it.id in present }
-            .map { it.id to it.name }
-            .sortedBy { it.second }
+    var matchesOnly by remember { mutableStateOf(false) }
+    LaunchedEffect(matchesOnly) {
+        if (matchesOnly) viewModel.ensureAllFilesForFilter()
     }
-    val filteredPorts = remember(ports, query, platformFilter) {
-        ports.filter { port ->
-            (platformFilter.isEmpty() || port.platformId == platformFilter) &&
+    val platformOptions = remember(games) {
+        games.map { it.platform }.distinct().sorted()
+            .map { it to it }
+    }
+    val filteredGames = remember(games, query, platformFilter, matchesOnly, gamesWithFiles) {
+        games.filter { game ->
+            (platformFilter.isEmpty() || game.platform == platformFilter) &&
+                (!matchesOnly || game.key in gamesWithFiles) &&
                 (query.isBlank() ||
-                    port.title.contains(query, ignoreCase = true) ||
-                    port.game.contains(query, ignoreCase = true))
+                    game.title.contains(query, ignoreCase = true) ||
+                    game.ports.any { it.title.contains(query, ignoreCase = true) })
         }
     }
     val catalogStatusText = when (val state = catalogState) {
@@ -378,31 +440,38 @@ private fun LibraryScreen(
         is CatalogState.Ready -> {
             val date = state.generatedAt.take(10)
             val cached = if (state.fromCache) " (cached)" else ""
-            "${state.portCount} ports · Recompa catalog, updated $date$cached"
+            "${games.size} games · ${state.portCount} ports · Recompa catalog, updated $date$cached"
         }
         is CatalogState.Unavailable -> state.message
     }
 
     LaunchedEffect(Unit) { viewModel.refreshLibrary() }
 
+    // The selected game: the ViewModel's selection when one is set,
+    // else the first game in the filtered list.
+    val selectedGame = remember(filteredGames, selectedGameKey) {
+        selectedGameKey?.let { key -> filteredGames.firstOrNull { it.key == key } }
+            ?: filteredGames.firstOrNull()
+    }
+
     if (unfolded) {
         Row(modifier = Modifier.fillMaxSize()) {
             // Unfolded console rail: the platforms, vertical, like the
             // concept's left rail. Folded, the same options are the one
-            // sideways-scrolling chip row inside PortList.
+            // sideways-scrolling chip row inside GameList.
             PlatformRail(
                 platformOptions = platformOptions,
                 selectedPlatform = platformFilter,
                 onPlatformChange = { platformFilter = it }
             )
-            PortList(
-                ports = filteredPorts,
+            GameList(
+                games = filteredGames,
                 statuses = statuses,
                 cloudFiles = cloudFiles,
-                selectedId = selectedId,
-                onSelect = onOpenDetail,
-                onOpenDetail = onOpenDetail,
-                onPlay = { viewModel.launchPort(it) },
+                selectedGameKey = selectedGame?.key,
+                onSelectGame = onSelectGame,
+                onOpenGame = onOpenGame,
+                onPlay = onPlay,
                 unfolded = unfolded,
                 modifier = Modifier.weight(0.42f),
                 onRefresh = { viewModel.refreshCatalog() },
@@ -411,14 +480,25 @@ private fun LibraryScreen(
                 platformOptions = platformOptions,
                 selectedPlatform = platformFilter,
                 onPlatformChange = { platformFilter = it },
+                matchesOnly = matchesOnly,
+                onMatchesOnlyChange = { matchesOnly = it },
                 catalogStatusText = catalogStatusText
             )
-            val selected = selectedId?.let { viewModel.portById(it) }
-                ?: filteredPorts.firstOrNull()
-            if (selected != null) {
+            // The detail pane: a port opened from a game page, else
+            // the selected game page.
+            val selectedPort = selectedPortId?.let { viewModel.portById(it) }
+            if (selectedPort != null) {
                 GameDetailContent(
                     viewModel = viewModel,
-                    port = selected,
+                    port = selectedPort,
+                    onGoToCloud = onGoToCloud,
+                    modifier = Modifier.weight(0.58f)
+                )
+            } else if (selectedGame != null) {
+                GamePageContent(
+                    viewModel = viewModel,
+                    game = selectedGame,
+                    onOpenDetail = onOpenDetail,
                     onGoToCloud = onGoToCloud,
                     modifier = Modifier.weight(0.58f)
                 )
@@ -432,14 +512,14 @@ private fun LibraryScreen(
             }
         }
     } else {
-        PortList(
-            ports = filteredPorts,
+        GameList(
+            games = filteredGames,
             statuses = statuses,
             cloudFiles = cloudFiles,
-            selectedId = selectedId,
-            onSelect = { viewModel.selectPort(it) },
-            onOpenDetail = onOpenDetail,
-            onPlay = { viewModel.launchPort(it) },
+            selectedGameKey = selectedGame?.key,
+            onSelectGame = onSelectGame,
+            onOpenGame = onOpenGame,
+            onPlay = onPlay,
             unfolded = unfolded,
             modifier = Modifier.fillMaxSize(),
             onRefresh = { viewModel.refreshCatalog() },
@@ -448,6 +528,8 @@ private fun LibraryScreen(
             platformOptions = platformOptions,
             selectedPlatform = platformFilter,
             onPlatformChange = { platformFilter = it },
+            matchesOnly = matchesOnly,
+            onMatchesOnlyChange = { matchesOnly = it },
             catalogStatusText = catalogStatusText
         )
     }
@@ -455,13 +537,13 @@ private fun LibraryScreen(
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-private fun PortList(
-    ports: List<Port>,
+private fun GameList(
+    games: List<GameEntry>,
     statuses: Map<String, PortStatus>,
     cloudFiles: List<PremiumizeItem>,
-    selectedId: String?,
-    onSelect: (String) -> Unit,
-    onOpenDetail: (String) -> Unit,
+    selectedGameKey: String?,
+    onSelectGame: (String) -> Unit,
+    onOpenGame: (String) -> Unit,
     onPlay: (String) -> Unit,
     unfolded: Boolean,
     modifier: Modifier,
@@ -471,14 +553,16 @@ private fun PortList(
     platformOptions: List<Pair<String, String>>,
     selectedPlatform: String,
     onPlatformChange: (String) -> Unit,
+    matchesOnly: Boolean,
+    onMatchesOnlyChange: (Boolean) -> Unit,
     catalogStatusText: String
 ) {
-    // The selected port: the ViewModel's selection when one is set, else
-    // the first port in the filtered list — so the shelf always has a
+    // The selected game: the ViewModel's selection when one is set, else
+    // the first game in the filtered list — so the shelf always has a
     // hero (folded) or a detail pane (unfolded) to show.
-    val selectedPort = remember(ports, selectedId) {
-        selectedId?.let { id -> ports.firstOrNull { it.id == id } }
-            ?: ports.firstOrNull()
+    val selectedGame = remember(games, selectedGameKey) {
+        selectedGameKey?.let { key -> games.firstOrNull { it.key == key } }
+            ?: games.firstOrNull()
     }
     Column(modifier = modifier) {
         Row(
@@ -494,14 +578,28 @@ private fun PortList(
                 Icon(Icons.Filled.Refresh, contentDescription = "Refresh library and catalog")
             }
         }
-        OutlinedTextField(
-            value = query,
-            onValueChange = onQueryChange,
-            label = { Text("Search ports") },
-            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                label = { Text("Search games") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            // "Has files": only games with at least one matching file
+            // (local, cloud, or server). Sits beside search in both
+            // postures, and composes with the platform filter.
+            FilterChip(
+                selected = matchesOnly,
+                onClick = { onMatchesOnlyChange(!matchesOnly) },
+                label = { Text("Has files") }
+            )
+        }
         if (!unfolded && platformOptions.isNotEmpty()) {
             // One horizontally scrolling row, not a wrapping grid: on the
             // folded screen the old FlowRow ran to ~6 rows and left room
@@ -536,35 +634,45 @@ private fun PortList(
         Column(
             modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
         ) {
-            // The shelf: covers as a horizontal row of spines. Tapping a
-            // spine selects the port — folded it fills the hero below,
-            // unfolded it fills the detail pane.
+            // The shelf: covers as a horizontal row of spines, one per
+            // game. Tapping a spine selects the game — folded it fills
+            // the hero below, unfolded it fills the detail pane.
             LazyRow(
                 modifier = Modifier.fillMaxWidth().height(216.dp),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                items(ports, key = { it.id }) { port ->
-                    val status = statuses[port.id]
-                    PortSpine(
-                        port = port,
-                        selected = port.id == selectedPort?.id,
-                        isInstalled = status?.isInstalled == true,
-                        onClick = { onSelect(port.id) }
+                items(games, key = { it.key }) { game ->
+                    val anyInstalled = game.ports.any { statuses[it.id]?.isInstalled == true }
+                    GameSpine(
+                        game = game,
+                        selected = game.key == selectedGame?.key,
+                        isInstalled = anyInstalled,
+                        onClick = { onSelectGame(game.key) }
                     )
                 }
             }
-            // Folded hero: the selected port large, with its title and
+            // Folded hero: the selected game large, with its title and
             // actions. Unfolded, the detail pane plays this role.
-            if (!unfolded && selectedPort != null) {
-                val status = statuses[selectedPort.id]
+            if (!unfolded && selectedGame != null) {
+                val anyInstalled = selectedGame.ports.any {
+                    statuses[it.id]?.isInstalled == true
+                }
+                val firstInstalled = selectedGame.ports.firstOrNull {
+                    statuses[it.id]?.isInstalled == true
+                }
+                val anyFile = selectedGame.ports.any {
+                    statuses[it.id]?.hasFile == true
+                }
                 val hasCloudFile = cloudFiles.any { item ->
-                    PortMatcher.matchKind(item.name, selectedPort) != null
+                    selectedGame.ports.any { port ->
+                        PortMatcher.matchKind(item.name, port) != null
+                    }
                 }
                 Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                    if (selectedPort.coverArtUrl.isNotBlank()) {
+                    if (selectedGame.coverArtUrl.isNotBlank()) {
                         AsyncImage(
-                            model = selectedPort.coverArtUrl,
+                            model = selectedGame.coverArtUrl,
                             contentDescription = null,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier
@@ -576,35 +684,64 @@ private fun PortList(
                         Spacer(modifier = Modifier.height(12.dp))
                     }
                     Text(
-                        text = selectedPort.title,
+                        text = selectedGame.title,
                         style = MaterialTheme.typography.headlineSmall
                     )
                     Text(
-                        text = selectedPort.game,
+                        text = selectedGame.platform,
                         style = MaterialTheme.typography.titleMedium
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "${selectedPort.system} · ${selectedPort.type}",
+                        text = if (selectedGame.ports.size == 1) {
+                            "1 port"
+                        } else {
+                            "${selectedGame.ports.size} ports"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        StatusChip(text = status?.statusText ?: "Not installed")
-                        FileBadge(status = status, hasCloudFile = hasCloudFile)
+                        StatusChip(text = when {
+                            anyInstalled && anyFile -> "Ready to play"
+                            anyInstalled -> "Installed"
+                            anyFile -> "File matched"
+                            else -> "Not installed"
+                        })
+                        val fileText = when {
+                            anyFile -> "File on device"
+                            hasCloudFile -> "File in cloud"
+                            else -> null
+                        }
+                        if (fileText != null) {
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Surface(
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                shape = MaterialTheme.shapes.small
+                            ) {
+                                Text(
+                                    text = fileText,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    modifier = Modifier.padding(
+                                        horizontal = 8.dp,
+                                        vertical = 4.dp
+                                    )
+                                )
+                            }
+                        }
                     }
                     Spacer(modifier = Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (status?.isInstalled == true) {
-                            Button(onClick = { onPlay(selectedPort.id) }) {
+                        if (firstInstalled != null) {
+                            Button(onClick = { onPlay(firstInstalled.id) }) {
                                 Icon(Icons.Filled.PlayArrow, contentDescription = null)
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text("Play")
                             }
                         }
-                        OutlinedButton(onClick = { onOpenDetail(selectedPort.id) }) {
-                            Text("Details")
+                        OutlinedButton(onClick = { onOpenGame(selectedGame.key) }) {
+                            Text("View game")
                         }
                     }
                 }
@@ -614,13 +751,14 @@ private fun PortList(
 }
 
 /**
- * One spine on the shelf: the port's cover art, portrait, with its
- * title underneath. The selected spine carries a lime outline; an
- * installed port carries a small lime play mark on the cover.
+ * One spine on the shelf: the game's cover art, portrait, with its
+ * title and platform underneath. The selected spine carries a lime
+ * outline; a game with any port installed carries a small lime play
+ * mark on the cover.
  */
 @Composable
-private fun PortSpine(
-    port: Port,
+private fun GameSpine(
+    game: GameEntry,
     selected: Boolean,
     isInstalled: Boolean,
     onClick: () -> Unit
@@ -640,9 +778,9 @@ private fun PortSpine(
             )
         ) {
             Box(modifier = Modifier.fillMaxSize()) {
-                if (port.coverArtUrl.isNotBlank()) {
+                if (game.coverArtUrl.isNotBlank()) {
                     AsyncImage(
-                        model = port.coverArtUrl,
+                        model = game.coverArtUrl,
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
@@ -653,7 +791,7 @@ private fun PortSpine(
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = port.title.take(1),
+                            text = game.title.take(1),
                             style = MaterialTheme.typography.headlineMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -683,8 +821,15 @@ private fun PortSpine(
         }
         Spacer(modifier = Modifier.height(6.dp))
         Text(
-            text = port.title,
+            text = game.title,
             style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = game.platform,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
@@ -695,7 +840,7 @@ private fun PortSpine(
  * The unfolded console rail: the platforms as a vertical list, like
  * the concept's left rail. The selected platform gets a lime bar and
  * lime text. Folded, the same options are the sideways-scrolling
- * chip row in PortList.
+ * chip row in GameList.
  */
 @Composable
 private fun PlatformRail(
@@ -1510,6 +1655,320 @@ private fun GameDetailContent(
     }
 }
 
+// ---- Game detail (v1.6.0) ----
+
+/**
+ * One game's page: its files from all three owned sources, then its
+ * recomps / decomps ranked by GitHub stars. The port detail page is
+ * unchanged — tapping a port here opens it, exactly as before.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun GamePageContent(
+    viewModel: OneViewModel,
+    game: GameEntry,
+    onOpenDetail: (String) -> Unit,
+    onGoToCloud: () -> Unit = {},
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val statuses by viewModel.portStatuses.collectAsState()
+    val pmAccount by viewModel.pmAccount.collectAsState()
+    val cloudAllFiles by viewModel.cloudAllFiles.collectAsState()
+    val cloudFallback by viewModel.cloudFallback.collectAsState()
+    val cloudAllLoading by viewModel.cloudAllLoading.collectAsState()
+    val cloudAllLoaded by viewModel.cloudAllLoaded.collectAsState()
+    val remoteFolders by viewModel.remoteFolders.collectAsState()
+    val serverListings by viewModel.serverListings.collectAsState()
+    val serverLoading by viewModel.serverLoading.collectAsState()
+    val downloadProgress by viewModel.downloadProgress.collectAsState()
+    val downloadError by viewModel.downloadError.collectAsState()
+    val detectedFiles by viewModel.detectedLocalFiles.collectAsState()
+    val localFolderUnavailable by viewModel.localFolderUnavailable.collectAsState()
+    val copyMessages by viewModel.copyMessage.collectAsState()
+    val extractMessages by viewModel.extractMessage.collectAsState()
+    val repoStars by viewModel.repoStars.collectAsState()
+
+    // Ranked ports: GitHub stars when known, else the catalog's
+    // download counts, ports with neither last.
+    val rankedPorts = remember(game, repoStars) {
+        rankPortsByStars(game.ports, repoStars)
+    }
+
+    // Your files, aggregated from all three owned sources and deduped
+    // by file name (on-device first, then cloud, then server).
+    val cloudMatches = remember(cloudAllFiles, cloudFallback, game) {
+        val items = if (cloudAllFiles.isNotEmpty()) {
+            cloudAllFiles
+        } else {
+            game.ports.flatMap { cloudFallback[it.id].orEmpty() }
+        }
+        matchCloudFilesForGame(items, game.ports)
+    }
+    val serverMatches = remember(remoteFolders, serverListings, game) {
+        val sources = remoteFolders.map { it.name to serverListings[it.id].orEmpty() }
+        matchServerFilesForGame(sources, game.ports)
+    }
+    val localMatches = remember(detectedFiles, statuses, game) {
+        val states = game.ports.associate { port ->
+            val status = statuses[port.id]
+            port.id to LocalFileState(
+                downloadedFileName = status?.downloadedFileName,
+                downloadedMatchKind = status?.downloadedMatchKind,
+                downloadedInnerEntry = status?.downloadedInnerEntry,
+                assignedFileName = status?.assignedFile?.name
+            )
+        }
+        matchLocalFilesForGame(detectedFiles, states, game.ports)
+    }
+    val gameFiles = remember(cloudMatches, serverMatches, localMatches) {
+        dedupeGameFiles(localMatches + cloudMatches + serverMatches)
+    }
+
+    // Fetch this game's star counts and make sure its cloud and server
+    // files are loaded; both are cached, so reopening does not re-hit
+    // either API.
+    LaunchedEffect(game.key) {
+        viewModel.fetchStarsForGame(game)
+        viewModel.ensureGameFilesFor(game)
+    }
+
+    Column(
+        modifier = modifier
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp)
+    ) {
+        if (game.coverArtUrl.isNotBlank()) {
+            AsyncImage(
+                model = game.coverArtUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(220.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+        }
+        Text(text = game.title, style = MaterialTheme.typography.headlineSmall)
+        Text(text = game.platform, style = MaterialTheme.typography.titleMedium)
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = if (game.ports.size == 1) "1 port" else "${game.ports.size} ports",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        // ---- Your files ----
+        Spacer(modifier = Modifier.height(16.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "Your files",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = { viewModel.refreshLibrary() }) {
+                Icon(Icons.Filled.Refresh, contentDescription = "Refresh matched files")
+            }
+        }
+        if (localFolderUnavailable) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Local folder unavailable — pick it again in Settings. " +
+                    "Files found there before are still listed below.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+        if (pmAccount == null && remoteFolders.isEmpty()) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Set a local folder in Settings, connect Premiumize " +
+                    "from the Cloud tab, or add a remote folder to see " +
+                    "your files for this game here.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            OutlinedButton(onClick = onGoToCloud) {
+                Text("Go to Cloud")
+            }
+        } else if ((cloudAllLoading && !cloudAllLoaded) ||
+            (serverLoading.isNotEmpty() && serverListings.isEmpty())
+        ) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(text = "Checking your files…", style = MaterialTheme.typography.bodyMedium)
+        } else if (gameFiles.isEmpty()) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "No file for this game yet — in your local folder, " +
+                    "your Premiumize cloud, or your server library.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        } else {
+            gameFiles.forEach { file ->
+                Spacer(modifier = Modifier.height(8.dp))
+                GameFileRow(
+                    file = file,
+                    downloadProgress = downloadProgress[file.premiumizeItem?.id],
+                    onDownload = { item -> viewModel.downloadItem(item) },
+                    onOpenInBrowser = { url -> openUrl(context, url) },
+                    onCopyDetected = { portId, detected ->
+                        viewModel.copyDetectedToDownloads(portId, detected)
+                    },
+                    onExtract = { portId -> viewModel.extractMatchedArchive(portId) }
+                )
+            }
+        }
+        if (downloadError != null) {
+            Text(text = downloadError!!, color = MaterialTheme.colorScheme.error)
+            TextButton(onClick = { viewModel.dismissDownloadError() }) {
+                Text("Dismiss")
+            }
+        }
+        game.ports.forEach { port ->
+            copyMessages[port.id]?.let { message ->
+                Text(text = message, style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { viewModel.dismissCopyMessage(port.id) }) {
+                    Text("Dismiss")
+                }
+            }
+            extractMessages[port.id]?.let { message ->
+                Text(text = message, style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { viewModel.dismissExtractMessage(port.id) }) {
+                    Text("Dismiss")
+                }
+            }
+        }
+
+        // ---- Recomps / decomps ----
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(text = "Recomps / decomps", style = MaterialTheme.typography.titleMedium)
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "Ranked by GitHub stars. When stars cannot be loaded, " +
+                "the catalog's download counts decide the order instead.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        rankedPorts.forEach { port ->
+            Spacer(modifier = Modifier.height(12.dp))
+            val status = statuses[port.id]
+            val stars = repoStars[port.repo]
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = port.title, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        text = port.repo +
+                            (stars?.let { " · $it stars" }
+                                ?: port.catalogDownloads?.let { " · $it downloads" }
+                                ?: ""),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                StatusChip(text = status?.statusText ?: "Not installed")
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (status?.isInstalled == true) {
+                    Button(onClick = { viewModel.launchPort(port.id) }) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Play")
+                    }
+                }
+                OutlinedButton(onClick = { onOpenDetail(port.id) }) {
+                    Text("Details")
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+    }
+}
+
+/** One row in the game page's Your files section: name, source, match, action. */
+@Composable
+private fun GameFileRow(
+    file: GameFile,
+    downloadProgress: Float?,
+    onDownload: (PremiumizeItem) -> Unit,
+    onOpenInBrowser: (String) -> Unit,
+    onCopyDetected: (String, DetectedFile) -> Unit,
+    onExtract: (String) -> Unit
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            when (file.source) {
+                GameFileSource.LOCAL -> Icons.Filled.Check
+                GameFileSource.CLOUD -> Icons.Filled.Cloud
+                GameFileSource.SERVER -> Icons.Filled.Storage
+            },
+            contentDescription = null
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = file.name, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                text = "${file.where} · ${matchKindLabel(file.kind, file.downloadedInnerEntry)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+    Spacer(modifier = Modifier.height(4.dp))
+    when (file.source) {
+        GameFileSource.CLOUD -> {
+            val item = file.premiumizeItem
+            if (item != null) {
+                if (downloadProgress != null) {
+                    LinearProgressIndicator(
+                        progress = { downloadProgress },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        text = "Downloading… ${(downloadProgress * 100).toInt()}%",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                } else {
+                    OutlinedButton(onClick = { onDownload(item) }) {
+                        Icon(Icons.Filled.Download, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Download to this device")
+                    }
+                }
+            }
+        }
+        GameFileSource.SERVER -> {
+            val url = file.remoteUrl
+            if (url != null) {
+                OutlinedButton(onClick = { onOpenInBrowser(url) }) {
+                    Icon(Icons.Filled.OpenInNew, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Open in browser")
+                }
+            }
+        }
+        GameFileSource.LOCAL -> {
+            val detected = file.detected
+            if (detected != null && file.kind != MatchKind.DIRECT) {
+                OutlinedButton(onClick = { onCopyDetected(file.portId, detected) }) {
+                    Text("Copy to Downloads/ONE")
+                }
+            } else if (file.downloadedInnerEntry != null) {
+                OutlinedButton(onClick = { onExtract(file.portId) }) {
+                    Text("Extract ${file.downloadedInnerEntry} to Downloads/ONE")
+                }
+            } else if (file.kind == MatchKind.ARCHIVE_PROVISIONAL) {
+                Text(
+                    text = "Archive — likely contains your file. " +
+                        "Refresh to confirm what is inside.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+}
+
 // ---- Cloud (Premiumize, own cloud only) ----
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -2162,7 +2621,7 @@ private fun SettingsScreen(
 
         Spacer(modifier = Modifier.height(24.dp))
         Text(text = "About", style = MaterialTheme.typography.titleMedium)
-        Text(text = "Portside 1.5.0 (release build)", style = MaterialTheme.typography.bodyMedium)
+        Text(text = "Portside 1.6.0 (release build)", style = MaterialTheme.typography.bodyMedium)
         Spacer(modifier = Modifier.height(8.dp))
         TextButton(onClick = { openUrl(context, "https://recompa.app") }) {
             Text(

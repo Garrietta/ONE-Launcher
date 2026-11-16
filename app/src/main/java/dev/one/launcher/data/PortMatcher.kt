@@ -3,7 +3,22 @@ package dev.one.launcher.data
 import dev.one.launcher.model.Port
 import java.io.File
 import java.io.FileOutputStream
+import java.text.Normalizer
 import java.util.zip.ZipFile
+
+/**
+ * Fold diacritics for tokenization: "pokémon" and "pokemon" must be
+ * the same token, on both sides of a match — the game title a hint
+ * comes from and the file name it is checked against. NFD splits a
+ * letter from its accent marks; the marks (Unicode category Mn) are
+ * dropped, leaving the base letter. Lowercases as well, so callers
+ * get a fully folded string. Without this, "Pokémon" tokenizes to
+ * "pok" + "mon" and no hint ever matches a real file name.
+ */
+fun normalizeForTokens(text: String): String =
+    Normalizer.normalize(text, Normalizer.Form.NFD)
+        .replace(Regex("\\p{Mn}+"), "")
+        .lowercase()
 
 /** How a file relates to a port. */
 enum class MatchKind {
@@ -22,7 +37,8 @@ enum class MatchKind {
      * port (464/536 catalog ports have none), so there is no extension to
      * verify — the file's name hits one of the port's DISTINCTIVE hints
      * (a hint no other port in the catalog shares, at least 4
-     * characters), through the same whole-word rules, and nothing more
+     * characters), or at least two of its filename hints of 4+
+     * characters, through the same whole-word rules, and nothing more
      * is claimed. The format was never verified; the UI labels it "name
      * only" so the user is not misled.
      */
@@ -55,9 +71,10 @@ data class PortMatch(
  * (no 7z library is bundled) and stay provisional.
  *
  * Ports the catalog lists no formats for (most of the catalog) match by
- * name only, through the same whole-word hint rules — but only on a
- * DISTINCTIVE hint, one no other port in the catalog shares
- * ([Port.distinctiveNameHints]) — and are labeled provisional
+ * name only, through the same whole-word hint rules — on a DISTINCTIVE
+ * hint, one no other port in the catalog shares
+ * ([Port.distinctiveNameHints]), or on at least two of the port's
+ * filename hints of 4+ characters — and are labeled provisional
  * ([MatchKind.NAME_ONLY]) — the format was never verified, so no
  * extension is invented for them.
  */
@@ -71,7 +88,7 @@ object PortMatcher {
 
     /** Lowercase word tokens of a file name, split on non-alphanumerics. */
     private fun fileNameWords(fileName: String): List<String> =
-        fileName.lowercase().split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
+        normalizeForTokens(fileName).split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
 
     /**
      * A hint matches when its words appear in the file name: a single-word
@@ -83,7 +100,7 @@ object PortMatcher {
      * "mm" must not match "mmo".
      */
     private fun hintMatchesFileName(hint: String, words: List<String>): Boolean {
-        val hintWords = hint.lowercase()
+        val hintWords = normalizeForTokens(hint)
             .split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
         if (hintWords.isEmpty()) return false
         if (hintWords.size == 1) {
@@ -128,23 +145,29 @@ object PortMatcher {
      * format to verify against. Never inspects file contents — pass a
      * File to [inspectZip] for that.
      *
-     * The name-only branch applies ONLY when the port has no formats at
-     * all, and only on the port's distinctive hints — hints no other
-     * port in the catalog shares, at least 4 characters long. A shared
-     * hint ("pokémon", "new", "men") must never match a file to the
-     * wrong port, so the branch uses [Port.distinctiveNameHints] and
-     * never the port's regex. Ports with formats keep the strict
-     * extension-gated matching above, unchanged.
+     * The name-only branch applies ONLY when the port has no formats
+     * at all, and only in two ways: (1) a distinctive hint — one no
+     * other port in the catalog shares, at least 4 characters long —
+     * or (2) at least two of the port's filename hints, each at least
+     * 4 characters long, hitting the file name. One shared hint is
+     * never enough ("pokémon" alone must not match every Pokémon
+     * port), but two together identify the game ("pokemon" + "black"
+     * is Eidos's file, not Arceus's). Ports with formats keep the
+     * strict extension-gated matching above, unchanged.
      */
     fun matchKind(fileName: String, port: Port): MatchKind? {
         if (matches(fileName, port)) return MatchKind.DIRECT
         if (port.fileExtensions.isEmpty()) {
             // No formats in the catalog for this port: match on the
-            // game's name only, and only on a hint that identifies
-            // this port alone. A port with no distinctive hint matches
-            // nothing — safe failure, better than a false match.
-            if (port.distinctiveNameHints.isEmpty()) return null
-            if (nameHitsHints(fileName, port.distinctiveNameHints, null)) {
+            // game's name only. A port with no distinctive hint and
+            // fewer than two long hints hitting matches nothing —
+            // safe failure, better than a false match.
+            if (port.distinctiveNameHints.isNotEmpty() &&
+                nameHitsHints(fileName, port.distinctiveNameHints, null)
+            ) {
+                return MatchKind.NAME_ONLY
+            }
+            if (nameHitsTwoHints(fileName, port.fileNameHints)) {
                 return MatchKind.NAME_ONLY
             }
             return null
@@ -169,6 +192,26 @@ object PortMatcher {
                 Regex(regex, RegexOption.IGNORE_CASE).containsMatchIn(name)
             } catch (e: Exception) {
                 false
+            }
+        }
+        return false
+    }
+
+    /**
+     * True when the file name hits at least two of the port's hints,
+     * each at least 4 characters long, by the same whole-word / prefix
+     * rules as [hintMatchesFileName]. Short hints ("new", "men", "pok")
+     * never count — a single shared word is never enough, and two short
+     * ones are not either.
+     */
+    private fun nameHitsTwoHints(name: String, hints: List<String>): Boolean {
+        val words = fileNameWords(name)
+        var hits = 0
+        for (hint in hints) {
+            if (hint.length < 4) continue
+            if (hintMatchesFileName(hint, words)) {
+                hits++
+                if (hits >= 2) return true
             }
         }
         return false

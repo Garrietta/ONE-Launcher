@@ -18,9 +18,12 @@ import dev.one.launcher.data.CustomLinksStore
 import dev.one.launcher.data.DetectedFile
 import dev.one.launcher.data.DownloadRepository
 import dev.one.launcher.data.DownloadState
+import dev.one.launcher.data.GameEntry
 import dev.one.launcher.data.GitHubAsset
 import dev.one.launcher.data.GitHubRelease
 import dev.one.launcher.data.GitHubReleasesApi
+import dev.one.launcher.data.GitHubStarsApi
+import dev.one.launcher.data.LocalFileState
 import dev.one.launcher.data.LocalFolder
 import dev.one.launcher.data.LocalFolderScanner
 import dev.one.launcher.data.LocalFolderStore
@@ -48,7 +51,13 @@ import dev.one.launcher.data.RemoteFolderSource
 import dev.one.launcher.data.RemoteFoldersStore
 import dev.one.launcher.data.RemoteListingResult
 import dev.one.launcher.data.SecureKeyStore
+import dev.one.launcher.data.StarCacheStore
+import dev.one.launcher.data.StarEntry
 import dev.one.launcher.data.compareVersions
+import dev.one.launcher.data.findGame
+import dev.one.launcher.data.gamesWithFiles
+import dev.one.launcher.data.groupPortsByGame
+import dev.one.launcher.data.isStarFresh
 import dev.one.launcher.data.mapCatalogPort
 import dev.one.launcher.data.mergeCatalogs
 import dev.one.launcher.data.normalizeCustomLinkUrl
@@ -65,6 +74,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.Credentials
@@ -328,6 +339,36 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     val catalogPlatforms: StateFlow<List<RecompaPlatform>> =
         _catalogPlatforms.asStateFlow()
 
+    /**
+     * The Library's game list (v1.6.0): the merged ports grouped by
+     * game title + platform, emulators excluded. Rebuilt whenever the
+     * port list changes (init, catalog apply).
+     */
+    private val _games = MutableStateFlow<List<GameEntry>>(emptyList())
+    val gamesFlow: StateFlow<List<GameEntry>> = _games.asStateFlow()
+
+    /** The game selected in the Library, by its stable key. Null = first game. */
+    private val _selectedGameKey = MutableStateFlow<String?>(null)
+    val selectedGameKey: StateFlow<String?> = _selectedGameKey.asStateFlow()
+
+    /** GitHub star counts by repo ("owner/name"), for ranking a game's ports. */
+    private val _repoStars = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val repoStars: StateFlow<Map<String, Int>> = _repoStars.asStateFlow()
+
+    /**
+     * Game keys with at least one matching file, for the Library's
+     * "Games with matches" filter. Recomputed on a background thread
+     * whenever the games or any file source changes.
+     */
+    private val _gamesWithFiles = MutableStateFlow<Set<String>>(emptySet())
+    val gamesWithFilesFlow: StateFlow<Set<String>> = _gamesWithFiles.asStateFlow()
+
+    private val starsApi = GitHubStarsApi()
+    private val starCacheStore = StarCacheStore(application)
+
+    /** Repos with a star fetch already running, so opens cannot stack them. */
+    private val starFetchInFlight = mutableSetOf<String>()
+
     /** Selected fork repo per port id, for ports with more than one fork. */
     private val _selectedForks = MutableStateFlow<Map<String, String>>(emptyMap())
     val selectedForks: StateFlow<Map<String, String>> = _selectedForks.asStateFlow()
@@ -406,6 +447,7 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
         catalogNote = catalog.catalogNote
         curatedPorts = catalog.ports
         _ports.value = catalog.ports
+        _games.value = groupPortsByGame(catalog.ports)
         refreshLibrary()
         // Recompa catalog: serve the cache immediately, then refresh in
         // the background (stale-while-revalidate). Failure with no cache
@@ -445,6 +487,35 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
             rebuildStatuses()
             if (folder != null) scanLocalFolder()
         }
+        // "Games with matches" filter state: the game keys with at
+        // least one matching file. Recomputed on a background thread
+        // whenever the games or any file source changes, so the filter
+        // is always in sync without blocking the UI.
+        viewModelScope.launch {
+            combine(
+                _games, _cloudAllFiles, _cloudFallback, _serverListings,
+                _detectedLocalFiles, _portStatuses, _remoteFolders
+            ) { games, cloudFiles, cloudFallback, serverListings,
+                detected, statuses, remoteFolders ->
+                val serverSources =
+                    remoteFolders.map { it.name to serverListings[it.id].orEmpty() }
+                val localStates = games.flatMap { it.ports }.associate { port ->
+                    val status = statuses[port.id]
+                    port.id to LocalFileState(
+                        downloadedFileName = status?.downloadedFileName,
+                        downloadedMatchKind = status?.downloadedMatchKind,
+                        downloadedInnerEntry = status?.downloadedInnerEntry,
+                        assignedFileName = status?.assignedFile?.name
+                    )
+                }
+                gamesWithFiles(
+                    games, cloudFiles, cloudFallback, serverSources,
+                    detected, localStates
+                )
+            }
+                .flowOn(Dispatchers.Default)
+                .collect { keys -> _gamesWithFiles.value = keys }
+        }
     }
 
     // ---- Library ----
@@ -454,6 +525,18 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun portById(id: String): Port? = ports.firstOrNull { it.id == id }
+
+    /**
+     * Select a game in the Library. Selecting a game clears the port
+     * selection, so the unfolded detail pane shows the game page again
+     * instead of the last port opened from it.
+     */
+    fun selectGame(key: String?) {
+        _selectedGameKey.value = key
+        if (key != null) _selectedPortId.value = null
+    }
+
+    fun gameByKey(key: String): GameEntry? = findGame(_games.value, key)
 
     fun refreshLibrary() {
         rebuildStatuses()
@@ -470,6 +553,14 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
         val catalogPorts = index.ports.map { mapCatalogPort(it, platformNames[it.original_platform].orEmpty()) }
         val merge = mergeCatalogs(curatedPorts, catalogPorts)
         _ports.value = merge.merged
+        _games.value = groupPortsByGame(merge.merged)
+        // A selected game that no longer exists (catalog changed)
+        // falls back to the first game.
+        if (_selectedGameKey.value != null &&
+            findGame(_games.value, _selectedGameKey.value!!) == null
+        ) {
+            _selectedGameKey.value = null
+        }
         _catalogPlatforms.value = index.platforms
         _catalogState.value = CatalogState.Ready(
             portCount = merge.merged.size,
@@ -1007,6 +1098,15 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
      * page is the only place remote entries are matched to ports.
      */
     fun ensureServerFilesFor(port: Port) {
+        ensureServerListings()
+    }
+
+    /**
+     * Fetch each configured remote folder's listing once per session
+     * and cache the file entries. Shared by the per-port detail page
+     * and the Library's "Games with matches" filter.
+     */
+    private fun ensureServerListings() {
         _remoteFolders.value.forEach { source ->
             if (_serverListings.value.containsKey(source.id)) return@forEach
             if (_serverLoading.value.contains(source.id)) return@forEach
@@ -1020,6 +1120,18 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    /**
+     * Make sure the file sources are loaded so the Library's "Games
+     * with matches" filter can compute: the Premiumize flat list when
+     * connected and not yet loaded, plus every remote folder's
+     * listing. Local files are already scanned on startup. The
+     * filter's game set recomputes itself when the data lands.
+     */
+    fun ensureAllFilesForFilter() {
+        if (isCloudConnected && !_cloudAllLoaded.value) refreshCloudFiles()
+        ensureServerListings()
     }
 
     /**
@@ -1049,6 +1161,78 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         return files
+    }
+
+    /**
+     * Make sure a game's files are available for its game page: cloud
+     * and server files for every port in the game. The per-port
+     * functions handle the once-per-session caching.
+     */
+    fun ensureGameFilesFor(game: GameEntry) {
+        for (port in game.ports) {
+            ensureCloudFilesFor(port)
+            ensureServerFilesFor(port)
+        }
+    }
+
+    /**
+     * Fetch GitHub star counts for a game's ports, for the star
+     * ranking. A fresh cached entry (~7 day TTL) is used instead of a
+     * network call; a repo already being fetched is skipped. Any
+     * failure just leaves that repo out of the map — the game page
+     * falls back to the catalog's download counts. One request per
+     * port at most, usually one per game page open.
+     */
+    fun fetchStarsForGame(game: GameEntry) {
+        val repos = game.ports
+            .mapNotNull { it.repo.takeIf { repo -> repo.isNotBlank() } }
+            .distinct()
+        if (repos.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val now = System.currentTimeMillis()
+            val cached = try {
+                starCacheStore.load()
+            } catch (e: Exception) {
+                emptyMap()
+            }
+            val fresh = mutableMapOf<String, Int>()
+            val toFetch = mutableListOf<String>()
+            for (repo in repos) {
+                val entry = cached[repo]
+                if (entry != null && isStarFresh(entry.fetchedAtMs, now)) {
+                    fresh[repo] = entry.stars
+                } else if (repo !in starFetchInFlight) {
+                    toFetch.add(repo)
+                }
+            }
+            if (fresh.isNotEmpty()) {
+                withContext(Dispatchers.Main) {
+                    _repoStars.value = _repoStars.value + fresh
+                }
+            }
+            if (toFetch.isEmpty()) return@launch
+            toFetch.forEach { starFetchInFlight.add(it) }
+            val fetched = mutableMapOf<String, Int>()
+            val updatedCache = cached.toMutableMap()
+            for (repo in toFetch) {
+                val stars = starsApi.starsForRepo(repo)
+                if (stars != null) {
+                    fetched[repo] = stars
+                    updatedCache[repo] = StarEntry(stars, now)
+                }
+            }
+            toFetch.forEach { starFetchInFlight.remove(it) }
+            if (fetched.isNotEmpty()) {
+                withContext(Dispatchers.Main) {
+                    _repoStars.value = _repoStars.value + fetched
+                }
+                try {
+                    starCacheStore.save(updatedCache)
+                } catch (e: Exception) {
+                    // Cache write is best-effort; the in-memory stars stand.
+                }
+            }
+        }
     }
 
     // ---- GitHub releases (update manager, detail page only) ----

@@ -44,6 +44,8 @@ data class RecompaPort(
     val original_platform: String = "",
     val type: String = "",
     val description: String = "",
+    /** Catalog download count, used as the star-ranking fallback. */
+    val downloads: Long? = null,
     val forks: List<RecompaFork> = emptyList(),
     val requirements: RecompaRequirements? = null,
     val assets: List<RecompaAsset>? = null,
@@ -158,19 +160,19 @@ private val HINT_GENERIC_TOKENS = setOf(
 )
 
 /**
- * Filename hints derived from a game title: lowercase word tokens of
- * length 3+, minus stopwords and generic tokens (region tags and
- * franchise-generic words — see [HINT_GENERIC_TOKENS]), plus the catalog
- * id itself. These are hints only — a file still needs a matching
- * extension (or an archive name hit) to match, except for ports the
- * catalog lists no formats for, which match by name only
- * ([MatchKind.NAME_ONLY]).
+ * Filename hints derived from a game title: diacritics folded, then
+ * lowercase word tokens of length 3+, minus stopwords and generic
+ * tokens (region tags and franchise-generic words — see
+ * [HINT_GENERIC_TOKENS]), plus the catalog id itself. These are hints
+ * only — a file still needs a matching extension (or an archive name
+ * hit) to match, except for ports the catalog lists no formats for,
+ * which match by name only ([MatchKind.NAME_ONLY]).
  */
 fun hintsFromGameTitle(game: String, catalogId: String): List<String> {
-    val words = game.lowercase()
+    val words = normalizeForTokens(game)
         .split(Regex("[^a-z0-9]+"))
         .filter { it.length >= 3 && it !in HINT_STOPWORDS && it !in HINT_GENERIC_TOKENS }
-    return (words + catalogId.lowercase()).distinct()
+    return (words + normalizeForTokens(catalogId)).distinct()
 }
 
 /** Map one catalog port onto a [Port]. Catalog-provided values only. */
@@ -221,6 +223,7 @@ fun mapCatalogPort(port: RecompaPort, platformName: String): Port {
         minAndroid = port.requirements?.min_sdk ?: 24,
         notes = "From the Recompa catalog (recompa.app).",
         catalogId = port.id,
+        catalogDownloads = port.downloads,
         platformId = port.original_platform,
         platformName = platformName,
         description = port.description,

@@ -39,6 +39,8 @@ data class Port(
     // ---- Recompa catalog fields (v1.3, all optional) ----
     /** Catalog id, e.g. "soh". Empty for curated-only ports. */
     val catalogId: String = "",
+    /** The catalog's download count for this port, for star-ranking fallback. Null for curated-only ports. */
+    val catalogDownloads: Long? = null,
     /** Original platform id from the catalog, e.g. "n64". */
     val platformId: String = "",
     /** Original platform name from the catalog, e.g. "Nintendo 64". */
@@ -64,11 +66,13 @@ data class Port(
     /**
      * Hints that identify this port alone: hints appearing in exactly
      * one port's hint set across the whole merged catalog, at least 4
-     * characters long. Only these may drive a NAME_ONLY match — a
+     * characters long. These drive a NAME_ONLY match on their own — a
      * shared hint ("pokémon", "new", "men") must never match a file to
-     * the wrong port. Set by [dev.one.launcher.data.withDistinctiveHints]
-     * at merge time; empty for curated-only ports (they all have
-     * formats, so they never reach the NAME_ONLY branch).
+     * the wrong port by itself. (A file can also match by name when it
+     * hits at least two of the port's filename hints, each 4+ chars.)
+     * Set by [dev.one.launcher.data.withDistinctiveHints] at merge
+     * time; empty for curated-only ports (they all have formats, so
+     * they never reach the NAME_ONLY branch).
      */
     val distinctiveNameHints: List<String> = emptyList(),
     /**

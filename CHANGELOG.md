@@ -1,5 +1,59 @@
 # Changelog
 
+## v1.6.0 — 2026-11-16
+
+The Library is game-centric now: it lists games, not ports. "Ocarina
+of Time (N64)" is one entry; tapping it opens a game page with your
+files for that game and the recomps / decomps for it, ranked by GitHub
+stars. Emulators are excluded from the game view — this app is
+recomps/decomps, not simple emulation. The port detail page is
+unchanged (install, launch, files, releases, Server library section),
+and the v1.5.0 dark Portside theme, console rail, and icon are
+unchanged. Upgrades in place over the v1.5.0 release build (same
+signature).
+
+- Games are grouped by game title + platform (529 games from the live
+  catalog: 525 with one port, 4 with two — Majora's Mask, A Link to
+  the Past, Donkey Kong 64, Castlevania: Symphony of the Night; 5
+  emulators excluded). A port with no game title falls back to its own
+  title. The shelf shows game covers (the top-ranked port's cover)
+  and the selected game shows large below it, folded; unfolded, the
+  detail pane shows the selected game page. Search matches game
+  titles and port titles inside a game.
+- The game page's Your files section aggregates all three owned
+  sources — local folder, Premiumize cloud, and remote folders
+  (JSON/site) — matched at the game level with the existing matcher
+  (a file matches the game if it matches any of its ports, distinctive
+  hints included), deduped by file name with on-device first, then
+  cloud, then server. Actions match the per-port sections: Copy /
+  Extract for local files, Download for cloud files, Open in browser
+  for server files.
+- Recomps / decomps on a game page are ranked by GitHub stars,
+  fetched from the GitHub API when a game page opens and cached on
+  this device for about 7 days (so opening games does not hammer the
+  unauthenticated 60-requests/hour limit). When stars cannot be
+  loaded, the catalog's download counts decide the order instead;
+  ports with neither go last. Tapping a port still opens its detail
+  page.
+- Matcher fix (Eidos): diacritics are folded before tokenizing, on
+  both sides — "Pokémon" and "pokemon" are the same token now, so
+  "Pokemon Black (NDS) (USA)" matches Eidos (Pokémon Black & White)
+  by name only. A format-less port also matches by name when the file
+  name hits at least two of its filename hints, each at least 4
+  characters long ("pokemon" + "black"); one shared hint is still
+  never enough, so the v1.5.0 false positives stay out (Arceus still
+  does not show the Pokopia .nup, ACNH still does not show the "NEW
+  upcoming releases" .txt, Army Men still does not show the X-Men '97
+  .mkv files), the Pokopia .nup still matches Pokopia only, and the
+  OoT zip still matches Ship of Harkinian only. Known ambiguity:
+  "Pokemon Black 2" also matches Eidos by the same two-hint rule
+  (no Black 2 port exists in the catalog; the match is labeled
+  "name only").
+- Library filter: a "Has files" chip beside the search box shows
+  only games with at least one matching file (local, cloud, or
+  server), using the same game-level matching as the game page.
+  Off by default; it composes with the platform filter and search.
+
 ## v1.5.0 — 2026-11-16
 
 Portside. ONE is renamed Portside (same app, same `com.garrietta.one`
