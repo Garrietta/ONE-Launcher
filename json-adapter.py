@@ -89,13 +89,14 @@ browse URL (MINERVA_NOINRO_URL, overridable with
 produces the combined 21-folder output. When --minerva is unset,
 no Minerva crawling happens at all (r-roms only).
 
-Region filter (Garrett, 2026-11-16): after the crawl, records are
+Region filter (Garrett, 2026-11-16; tightened 2026-11-16): after the crawl, records are
 deduped per game — one per (category, cleaned title), best region
 first (USA, then EU / another English-speaking region, then a ROM
 that does not specify a country). A game with no English-speaking
 ROM at all (Japan-only, ...) drops out. An entry in an otherwise
-excluded region still counts when it carries an explicit English
-language tag ("(En)"), because the ROM is English-speaking.
+excluded region (China, Asia, Japan, ...) is dropped outright — an
+explicit English language tag ("(En)") does NOT save it; only USA,
+EU / another English-speaking region, or no-region entries are kept.
 Disc/part tags are part of the dedup key, so a multi-disc game keeps
 every disc. Applies to the r-roms direct links and the Minerva
 magnets alike.
@@ -962,13 +963,12 @@ _REGION_EXCLUDED = frozenset({
     "scandinavia", "latin america", "asia",
 })
 
-# Region tiers (Garrett, 2026-11-16): only English-speaking ROMs.
-# USA first, then EU / another English-speaking region, then a ROM
-# that does not specify a country (no region tag, "World",
-# "Unknown"). Anything else (Japan, Korea, Germany, ...) is dropped
-# -- unless it carries an explicit English language tag ("(En)"),
-# which is the data's own statement that the ROM is English, so it
-# counts as an English fallback (tier 1).
+# Region tiers (Garrett, 2026-11-16; tightened 2026-11-16): only
+# USA, EU / another English-speaking region, or a ROM that does not
+# specify a country (no region tag, "World", "Unknown"). Anything
+# else (Japan, Korea, Germany, China, Asia, ...) is dropped outright
+# — an explicit English language tag ("(En)") does NOT save an
+# entry in an excluded region; the region is what counts.
 REGION_TIER_USA = 0
 REGION_TIER_EU_ENGLISH = 1
 REGION_TIER_NO_REGION = 2
@@ -984,26 +984,14 @@ _GAME_EXTS = frozenset({
 })
 
 
-def _has_english_language_tag(name):
-    """True when a parenthesised group is a language list that
-    includes English (e.g. "(En)", "(En,Fr,De)") — a list of
-    two-letter codes containing 'en'. A region tag like "(USA)"
-    or "(EU)" is not a language list, and "(Ja)" has no 'en'."""
-    for group in _PAREN_RE.findall(name or ""):
-        parts = [p.strip().lower() for p in group.split(",")]
-        if parts and all(re.fullmatch(r"[a-z]{2}", p) for p in parts) \
-                and "en" in parts:
-            return True
-    return False
-
-
 def region_tier(name):
     """The region tier for a record name (0 USA, 1 EU/English,
-    2 no-region), or None when the ROM is not English-speaking.
-    Reads the region from every parenthesised group. A region that
-    is otherwise excluded (Japan, Asia, ...) still counts as tier 1
-    when the name carries an explicit English language tag
-    ("(En)", "(En,Fr,De)") — the ROM is English-speaking."""
+    2 no-region), or None when the ROM is not kept. Reads the
+    region from every parenthesised group. An excluded region
+    (Japan, China, Asia, ...) returns None outright — an explicit
+    English language tag ("(En)", "(En,Fr,De)") does NOT save it
+    (Garrett, 2026-11-16: only USA, EU / another English-speaking
+    region, or no-region)."""
     regions = []
     for group in _PAREN_RE.findall(name or ""):
         regions.extend(p.strip().lower() for p in group.split(","))
@@ -1013,8 +1001,6 @@ def region_tier(name):
     if _REGION_EU_ENGLISH & region_set:
         return REGION_TIER_EU_ENGLISH
     if _REGION_EXCLUDED & region_set:
-        if _has_english_language_tag(name):
-            return REGION_TIER_EU_ENGLISH
         return None
     return REGION_TIER_NO_REGION
 
