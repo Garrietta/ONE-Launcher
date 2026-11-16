@@ -44,11 +44,12 @@ Parsing (per the site's own layout):
      name), deduplicated by URL, and sorted by name.
 
 Minerva magnet crawling (v1.8.0, --minerva; per-game recursion
-added after v1.8.0): the Minerva browse page already carries the
-magnets. Each <div class="entry"> on a browse page holds the name
-(the first <a>'s text — a <strong> on folder pages, the game name
-on system pages), a <span> with the size, and a magnet button whose
-onclick is downloadMagnet('magnet:?xt=urn:btih:<hash>&dn=
+added after v1.8.0; 21-folder allowlist added after v1.8.1): the
+Minerva browse page already carries the magnets. Each
+<div class="entry"> on a browse page holds the name (the first
+<a>'s text — a <strong> on folder pages, the game name on system
+pages), a <span> with the size, and a magnet button whose onclick
+is downloadMagnet('magnet:?xt=urn:btih:<hash>&dn=
 Minerva_Myrient'). The dn is the same generic string for every
 entry, so the real name comes from the entry. One torrent per
 system: every game on a system page shares that system's infohash,
@@ -76,6 +77,17 @@ COPIES the magnet link, never downloads or resolves it. Without
 --minerva the adapter is r-roms only, exactly as before. (The CDN
 .torrent approach is dead: https://cdn.minerva-archive.org/torrents/
 404s — verified 2026-11-16. No bencodepy, no .torrent decoding.)
+
+Scope (Garrett, 2026-11-16): the crawl is limited to
+MINERVA_ALLOWLIST — the 21 major-console game folders (13 Redump
+optical-disc systems, 8 No-Intro cartridge/handheld Nintendo
+systems). The allowlist gates which subfolders are recursed into
+at the folder-page level; everything inside an allowed system is
+crawled. --minerva crawls its URL and, alongside it, the No-Intro
+browse URL (MINERVA_NOINRO_URL, overridable with
+--minerva-nointro), both under the same allowlist, so one run
+produces the combined 21-folder output. When --minerva is unset,
+no Minerva crawling happens at all (r-roms only).
 
 Standard library only. Python 3.8+.
 """
@@ -419,6 +431,49 @@ TRACKERS = [
 # recursed into.
 ROOT_SYSTEM_GROUPS = ("redump", "no-intro")
 
+# The No-Intro companion root: the cartridge/handheld systems live
+# here, not under Redump. Crawled alongside --minerva by default;
+# --minerva-nointro (or ADAPTER_MINERVA_NOINRO_URL) overrides it.
+MINERVA_NOINRO_URL = "https://minerva-archive.org/browse/No-Intro/"
+
+# The systems the Minerva crawl is allowed into (Garrett,
+# 2026-11-16): the major-console game folders only. Keyed by the
+# folder name as it appears on the browse page (trailing '/'
+# stripped). Everything else is skipped at the folder level — all
+# arcade folders, Apple Macintosh, IBM - PC compatible, the
+# duplicate-format variants (NES Headerless, N64 ByteSwapped,
+# DS/3DS Encrypted, Aftermarket and Private sets), and the utility
+# folders (BIOS Images, Disc Keys, SBI Subchannels, GDI Files,
+# GameShark Updates). One canonical set per system, so no
+# duplicate-format double-counts. Redump (13): the optical-disc
+# consoles. No-Intro (8): the cartridge/handheld Nintendo systems.
+# 21 folders, ~81,435 records.
+MINERVA_ALLOWLIST = frozenset({
+    # Redump
+    "Nintendo - GameCube - NKit RVZ [zstd-19-128k]",
+    "Nintendo - Wii - NKit RVZ [zstd-19-128k]",
+    "Nintendo - Wii U - WUX",
+    "Sony - PlayStation",
+    "Sony - PlayStation 2",
+    "Sony - PlayStation 3",
+    "Sony - PlayStation Portable",
+    "Microsoft - Xbox",
+    "Microsoft - Xbox 360",
+    "Sega - Dreamcast",
+    "Sega - Saturn",
+    "Sega - Mega CD & Sega CD",
+    "Sega - Prologue 21",
+    # No-Intro
+    "Nintendo - Nintendo Entertainment System (Headered)",
+    "Nintendo - Super Nintendo Entertainment System",
+    "Nintendo - Nintendo 64 (BigEndian)",
+    "Nintendo - Game Boy",
+    "Nintendo - Game Boy Color",
+    "Nintendo - Game Boy Advance",
+    "Nintendo - Nintendo DS (Decrypted)",
+    "Nintendo - Nintendo 3DS (Decrypted)",
+})
+
 _SIZE_RE = re.compile(r"^\s*([\d.]+)\s*([KMGT]?i?B)\s*$", re.IGNORECASE)
 _SIZE_MULT = {
     "B": 1,
@@ -665,18 +720,30 @@ def _minerva_category_for_page(ancestors, fallback):
     return fallback
 
 
-def _minerva_collect_recursive(page_url, ancestors, depth, state):
+def _minerva_collect_recursive(page_url, ancestors, depth, state,
+                               allowlist=None):
     """Recurse a Minerva browse page into magnet records.
 
     Folder entries (a /browse/ link) are recursed into — their own
     collection magnet is NOT emitted — and leaf entries (games) emit
-    their per-game magnet. A subfolder that yields nothing falls
-    back to its own magnet(s) with a warning, so a system is never
-    silently dropped. `ancestors` is the folder-name chain from the
-    requested page down to this page (for the category). `state`
+    their per-game magnet. `ancestors` is the folder-name chain from
+    the requested page down to this page (for the category). `state`
     holds the visited page URLs (cycle guard) and the running
     record count (cap guard). Raises _MinervaCapExceeded when the
-    cap would be exceeded."""
+    cap would be exceeded.
+
+    `allowlist` (a set of folder names, or None) gates which
+    subfolders are recursed into, and applies at exactly one level:
+    the page this call processes. A subfolder whose name is not in
+    the allowlist is skipped outright. A subfolder that IS in the
+    allowlist is recursed into with allowlist=None, so everything
+    inside that system (games, and any letter-group subfolders) is
+    crawled. When the allowlist is in play, a subfolder that yields
+    nothing is NOT fallen back to its own magnet(s) — that would
+    emit a whole-system collection magnet, which the allowlist scope
+    forbids — it is only warned about. With allowlist=None (inside
+    a system) the old fallback stands, so a subfolder is never
+    silently dropped."""
     if depth > MINERVA_MAX_DEPTH:
         print(f"warning: Minerva depth cap reached at {page_url}; "
               f"skipping", file=sys.stderr)
@@ -695,14 +762,17 @@ def _minerva_collect_recursive(page_url, ancestors, depth, state):
         if name in ("..", ".", ""):
             continue
         if _minerva_is_subfolder(entry, page_url):
+            if allowlist is not None and name not in allowlist:
+                continue
             sub_url = urllib.parse.urljoin(page_url, entry["href"])
             sub_url = sub_url.replace("/./", "/")
             sub = _minerva_collect_recursive(
-                sub_url, ancestors + [name], depth + 1, state
+                sub_url, ancestors + [name], depth + 1, state,
+                allowlist=None,
             )
             if sub:
                 records.extend(sub)
-            else:
+            elif allowlist is None:
                 # The subfolder gave nothing (unreachable or empty):
                 # fall back to this entry's own magnet(s) so the
                 # system is not silently dropped, and say so loudly.
@@ -712,6 +782,15 @@ def _minerva_collect_recursive(page_url, ancestors, depth, state):
                 batch = _minerva_records_for_entry(entry, category, False)
                 records.extend(batch)
                 state["count"] += len(batch)
+            else:
+                # Allowlisted system, but its page gave nothing: do
+                # NOT fall back to its own (whole-system) magnet —
+                # the scope is per-game only. Warn loudly instead;
+                # the next run retries it.
+                print(f"warning: Minerva allowlisted subfolder "
+                      f"{sub_url} yielded no records; skipping "
+                      f"(no whole-system magnet fallback)",
+                      file=sys.stderr)
         else:
             batch = _minerva_records_for_entry(entry, category, True)
             records.extend(batch)
@@ -753,55 +832,75 @@ def _minerva_category_from_url(page_url):
     return parts[-1] if parts else "Minerva"
 
 
-def collect_minerva_records(minerva_arg):
-    """Minerva magnet records for --minerva (a single browse URL, or
-    'all' for the root). Recurses into subfolders: a folder page's
-    entries are systems (their own collection magnets are NOT
-    emitted — only the games inside them), and a system page's
-    entries are the games, each with its own per-game magnet
-    (system infohash + &so=<data-m>). The root browse page
-    (/browse/) recurses into its Redump and No-Intro subfolders.
-    Returns [] when Minerva is not requested or a page cannot be
-    reached. A fetch failure warns and skips, never fails the whole
-    run. Raises _MinervaCapExceeded when the crawl would exceed
-    MINERVA_MAX_RECORDS."""
-    if not minerva_arg:
-        return []
-    arg = minerva_arg.strip()
-    if arg.lower() == "all":
-        arg = "https://minerva-archive.org/browse/"
-    if not is_http_url(arg):
-        print(f"warning: --minerva is not a URL, skipping Minerva: {arg}",
-              file=sys.stderr)
+def collect_minerva_records(minerva_args):
+    """Minerva magnet records for --minerva (a browse URL, or 'all'
+    for the root) plus the No-Intro companion root. `minerva_args`
+    is a list of browse URLs (empty strings are ignored). Recurses
+    into subfolders: a folder page's entries are systems (their own
+    collection magnets are NOT emitted — only the games inside
+    them), and a system page's entries are the games, each with its
+    own per-game magnet (system infohash + &so=<data-m>). The root
+    browse page (/browse/) recurses into its Redump and No-Intro
+    subfolders. Only the MINERVA_ALLOWLIST systems are recursed
+    into, at the folder-page level; everything inside an allowed
+    system is crawled. One shared visited/cap state covers all
+    roots, so a root already covered (e.g. No-Intro under 'all')
+    is not crawled twice. Returns [] when Minerva is not requested
+    or a page cannot be reached. A fetch failure warns and skips,
+    never fails the whole run. Raises _MinervaCapExceeded when the
+    crawl would exceed MINERVA_MAX_RECORDS."""
+    if isinstance(minerva_args, str):
+        minerva_args = [minerva_args]
+    roots = []
+    for raw in minerva_args or []:
+        arg = (raw or "").strip()
+        if not arg:
+            continue
+        if arg.lower() == "all":
+            arg = "https://minerva-archive.org/browse/"
+        if not is_http_url(arg):
+            print(f"warning: --minerva is not a URL, skipping "
+                  f"Minerva: {arg}", file=sys.stderr)
+            continue
+        roots.append(arg)
+    if not roots:
         return []
     state = {"visited": set(), "count": 0}
-    if _minerva_is_root(arg):
-        # The root page lists the top-level collections; recurse
-        # into the game-system groups (Redump, No-Intro) and emit
-        # the games inside their systems.
-        entries = _minerva_parse_page(arg)
-        records = []
-        for entry in entries:
-            name = _minerva_clean_entry_name(entry.get("name"))
-            if name.lower() not in ROOT_SYSTEM_GROUPS:
-                continue
-            href = entry.get("href")
-            if not href:
-                continue
-            sub_url = urllib.parse.urljoin(arg, href).replace("/./", "/")
+    records = []
+    for arg in roots:
+        norm = urllib.parse.urldefrag(arg)[0].rstrip("/")
+        if norm in state["visited"]:
+            continue
+        if _minerva_is_root(arg):
+            # The root page lists the top-level collections; recurse
+            # into the game-system groups (Redump, No-Intro) and
+            # emit the games inside their systems.
+            entries = _minerva_parse_page(arg)
+            for entry in entries:
+                name = _minerva_clean_entry_name(entry.get("name"))
+                if name.lower() not in ROOT_SYSTEM_GROUPS:
+                    continue
+                href = entry.get("href")
+                if not href:
+                    continue
+                sub_url = urllib.parse.urljoin(arg, href).replace("/./", "/")
+                sub = _minerva_collect_recursive(
+                    sub_url, [name], 1, state,
+                    allowlist=MINERVA_ALLOWLIST,
+                )
+                print(f"  Minerva {name}: {len(sub)} record(s)",
+                      file=sys.stderr)
+                records.extend(sub)
+            print(f"Minerva: {len(records)} record(s) from the root "
+                  f"browse page", file=sys.stderr)
+        else:
+            ancestors = [_minerva_category_from_url(arg)]
             sub = _minerva_collect_recursive(
-                sub_url, [name], 1, state
+                arg, ancestors, 0, state, allowlist=MINERVA_ALLOWLIST
             )
-            print(f"  Minerva {name}: {len(sub)} record(s)",
+            print(f"Minerva: {len(sub)} record(s) from {arg}",
                   file=sys.stderr)
             records.extend(sub)
-        print(f"Minerva: {len(records)} record(s) from the root "
-              f"browse page", file=sys.stderr)
-        return records
-    ancestors = [_minerva_category_from_url(arg)]
-    records = _minerva_collect_recursive(arg, ancestors, 0, state)
-    print(f"Minerva: {len(records)} record(s) from {arg}",
-          file=sys.stderr)
     return records
 # ---------------------------------------------------------------------------
 # Main
@@ -831,6 +930,18 @@ def main(argv=None):
         "the root browse page, or set ADAPTER_MINERVA_URL. "
         "Empty/absent skips Minerva.",
     )
+    arg_parser.add_argument(
+        "--minerva-nointro",
+        default=os.environ.get(
+            "ADAPTER_MINERVA_NOINRO_URL", MINERVA_NOINRO_URL
+        ),
+        help="No-Intro magnet crawl, alongside --minerva: the "
+        "No-Intro browse URL (default "
+        "https://minerva-archive.org/browse/No-Intro/). The same "
+        "21-folder allowlist applies. Set "
+        "ADAPTER_MINERVA_NOINRO_URL or pass an empty string to "
+        "change/disable it. Only used when --minerva is set.",
+    )
     args = arg_parser.parse_args(argv)
     base_url = args.base_url.strip()
     if not base_url:
@@ -841,6 +952,7 @@ def main(argv=None):
         base_url += "/"
 
     minerva_arg = (args.minerva or "").strip()
+    nointro_arg = (args.minerva_nointro or "").strip()
 
     index_html = fetch(base_url)
     if index_html is None:
@@ -863,14 +975,18 @@ def main(argv=None):
 
     # Minerva magnet records, if requested: one per game inside the
     # requested folder's subfolders, each carrying its full magnet
-    # URI (system infohash + &so=<data-m>). The r-roms records above
-    # are untouched by this step. A crawl that would exceed the
-    # record cap aborts the run without writing anything, so a
-    # stale remote.json stays live instead of a truncated one.
+    # URI (system infohash + &so=<data-m>). Both the --minerva root
+    # and the No-Intro companion root are crawled, under the same
+    # 21-folder allowlist. The r-roms records above are untouched
+    # by this step. A crawl that would exceed the record cap aborts
+    # the run without writing anything, so a stale remote.json
+    # stays live instead of a truncated one.
     minerva_records = []
     if minerva_arg:
         try:
-            minerva_records = collect_minerva_records(minerva_arg)
+            minerva_records = collect_minerva_records(
+                [minerva_arg, nointro_arg]
+            )
         except _MinervaCapExceeded as exc:
             print(f"error: {exc}; not writing {args.output}",
                   file=sys.stderr)
