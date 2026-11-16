@@ -1,5 +1,32 @@
 # Changelog
 
+## v1.4.1 — 2026-11-16
+
+Device feedback on v1.4.0: a "Pokémon Pokopia [0400A3A01EE4C000][v655360].nup"
+(6.5 GB) in the Premiumize cloud showed no match chip, and the Pokopia
+detail page said "No file for this port in your Premiumize cloud yet."
+Root cause: the catalog lists no file formats for 464/536 ports (Pokopia's
+only asset is a manual folder requirement with an empty accepted list),
+and the matcher refused ports with no formats outright.
+
+- Name-only matching for format-less ports: when the catalog lists no
+  formats for a port, a file whose name hits the port's hints (same
+  whole-word rules as the archive path) now matches, labeled
+  provisionally as "name only" in Cloud chips, the detail Premiumize and
+  Local sections, and the Settings matched-files list. No extension is
+  invented — the .nup is not hardcoded anywhere; the match uses only the
+  game's name. Ports with formats keep strict extension-gated matching,
+  unchanged.
+- Detail page honesty: the catalog's own file requirement and
+  instructions_md are shown verbatim (for Pokopia: the folder with
+  base/, .nsp/.xci not supported, copy the folder, Add game, Prepare),
+  and "File info not listed in the catalog." now appears only when
+  there is truly no asset info. Also fixed the doubled "Your own Your…"
+  wording when a catalog label already starts with "Your".
+- Known limitation: matching Premiumize/local *folders* by name is not
+  built here — the catalog wants a folder for Pokopia, but the .nup file
+  is covered by the name-only fallback.
+
 ## v1.4.0 — 2026-11-16
 
 An isolated, generic remote directory browser ("Remote folders" in

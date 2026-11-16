@@ -53,7 +53,22 @@ data class Port(
      * False when the catalog says zip_ok is false for every required
      * file, or when the port has no file info at all.
      */
-    val archiveOk: Boolean = true
+    val archiveOk: Boolean = true,
+    /**
+     * The catalog's own instructions for the port's required files
+     * (instructions_md), joined when a port has several assets. "" when
+     * the catalog provides none. Shown verbatim on the detail page —
+     * never invented.
+     */
+    val fileInstructions: String = "",
+    /**
+     * True when the catalog provides any file info for this port
+     * (assets[] present and non-empty). False only when there is truly
+     * no asset info — the detail page says "File info not listed in the
+     * catalog." then, and only then. A port can have file info (a label,
+     * instructions) and still have no formats.
+     */
+    val hasFileInfo: Boolean = true
 )
 
 @Serializable

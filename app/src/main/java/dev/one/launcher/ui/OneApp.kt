@@ -599,6 +599,9 @@ private fun matchKindLabel(kind: MatchKind, innerEntry: String? = null): String 
         MatchKind.DIRECT -> "file"
         MatchKind.ARCHIVE_CONFIRMED -> "archive — contains $innerEntry"
         MatchKind.ARCHIVE_PROVISIONAL -> "archive"
+        // Name-only is provisional by construction: the catalog lists
+        // no formats for this port, so the format was never verified.
+        MatchKind.NAME_ONLY -> "name only"
     }
 
 /** One row in the detail page's Local section: name, where it is, how it matches. */
@@ -748,13 +751,26 @@ private fun GameDetailContent(
             }
         }
         Text(text = port.requiredDump, style = MaterialTheme.typography.bodyMedium)
+        // The catalog's own instructions for the required files, shown
+        // verbatim — for Pokopia this is the folder requirement (.nsp /
+        // .xci not supported, copy the folder, Add game, Prepare).
+        if (port.fileInstructions.isNotBlank()) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = port.fileInstructions,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
         Spacer(modifier = Modifier.height(4.dp))
-        if (port.fileExtensions.isEmpty()) {
+        // "Not listed" only when there is truly no asset info — a port
+        // with a label or instructions but no formats (Pokopia) has file
+        // info; it just has no machine-readable formats.
+        if (!port.hasFileInfo) {
             Text(
                 text = "File info not listed in the catalog.",
                 style = MaterialTheme.typography.bodySmall
             )
-        } else {
+        } else if (port.fileExtensions.isNotEmpty()) {
             Text(
                 text = "Accepted: ${port.fileExtensions.joinToString(", ")}; " +
                     "archives .zip, .7z, .rar are matched by name",
@@ -1470,6 +1486,10 @@ private fun CloudItemRow(
                                 }
                                 MatchKind.ARCHIVE_CONFIRMED ->
                                     "Matches ${match.port.title} (archive)"
+                                // Name-only: the catalog lists no formats
+                                // for this port, so say so on the chip.
+                                MatchKind.NAME_ONLY ->
+                                    "Matches ${match.port.title} (name only)"
                             }
                             AssistChip(
                                 onClick = { onOpenDetail(match.port.id) },
@@ -1623,6 +1643,8 @@ private fun SettingsScreen(
                         "archive — contains ${status.downloadedInnerEntry}"
                     status?.downloadedMatchKind == MatchKind.ARCHIVE_PROVISIONAL ->
                         "archive (likely match)"
+                    status?.downloadedMatchKind == MatchKind.NAME_ONLY ->
+                        "name-only match"
                     status?.downloadedMatchKind == MatchKind.DIRECT -> "downloaded file"
                     else -> "matched file"
                 }

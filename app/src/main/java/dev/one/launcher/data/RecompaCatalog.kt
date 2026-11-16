@@ -87,7 +87,11 @@ data class RecompaAsset(
     val label: String = "",
     val accepted: List<RecompaAccepted> = emptyList(),
     val convert_from: List<String> = emptyList(),
-    val zip_ok: Boolean = false
+    val zip_ok: Boolean = false,
+    /** True when the file must be supplied by hand, not matched by format. */
+    val manual: Boolean = false,
+    /** Free-text instructions for supplying the file, "" when none. */
+    @SerialName("instructions_md") val instructionsMd: String = ""
 )
 
 @Serializable
@@ -158,7 +162,9 @@ private val HINT_GENERIC_TOKENS = setOf(
  * length 3+, minus stopwords and generic tokens (region tags and
  * franchise-generic words — see [HINT_GENERIC_TOKENS]), plus the catalog
  * id itself. These are hints only — a file still needs a matching
- * extension (or an archive name hit) to match.
+ * extension (or an archive name hit) to match, except for ports the
+ * catalog lists no formats for, which match by name only
+ * ([MatchKind.NAME_ONLY]).
  */
 fun hintsFromGameTitle(game: String, catalogId: String): List<String> {
     val words = game.lowercase()
@@ -169,24 +175,33 @@ fun hintsFromGameTitle(game: String, catalogId: String): List<String> {
 
 /** Map one catalog port onto a [Port]. Catalog-provided values only. */
 fun mapCatalogPort(port: RecompaPort, platformName: String): Port {
-    val extensions = port.assets.orEmpty().flatMap { asset ->
+    val assets = port.assets.orEmpty()
+    val extensions = assets.flatMap { asset ->
         (asset.accepted.map { it.format } + asset.convert_from)
             .map { it.lowercase() }
             .filter { it.isNotBlank() }
             .map { ".$it" }
     }.distinct()
-    val zipOk = port.assets.orEmpty().any { it.zip_ok }
-    val requiredDump = port.assets.orEmpty()
+    val zipOk = assets.any { it.zip_ok }
+    val labels = assets
         .mapNotNull { it.label.takeIf { label -> label.isNotBlank() } }
         .distinct()
-        .let { labels ->
-            if (labels.isEmpty()) {
-                "Your own game files for ${port.game}. " +
-                    "File info not listed in the catalog."
-            } else {
-                "Your own ${labels.joinToString(" / ")}."
-            }
-        }
+    // The requirement is the catalog's own label text. A label that
+    // already starts with "Your" ("Your Switch 2 game dump…") is shown
+    // as-is — prefixing "Your own" would read "Your own Your…".
+    // The "not listed" phrase is NOT embedded here: the detail page
+    // renders it from hasFileInfo, so it appears only when there is
+    // truly no asset info at all.
+    val requiredDump = when {
+        labels.isEmpty() -> "Your own game files for ${port.game}."
+        labels.joinToString(" / ").startsWith("Your", ignoreCase = true) ->
+            "${labels.joinToString(" / ")}."
+        else -> "Your own ${labels.joinToString(" / ")}."
+    }
+    val instructions = assets
+        .mapNotNull { it.instructionsMd.takeIf { text -> text.isNotBlank() } }
+        .distinct()
+        .joinToString("\n\n")
     val firstFork = port.forks.firstOrNull()
     return Port(
         id = port.id,
@@ -211,7 +226,9 @@ fun mapCatalogPort(port: RecompaPort, platformName: String): Port {
         description = port.description,
         coverArtUrl = port.art?.cover.orEmpty(),
         forks = port.forks.map { mapFork(it) },
-        archiveOk = zipOk
+        archiveOk = zipOk,
+        fileInstructions = instructions,
+        hasFileInfo = assets.isNotEmpty()
     )
 }
 

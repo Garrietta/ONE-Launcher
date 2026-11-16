@@ -2,6 +2,9 @@ package dev.one.launcher
 
 import dev.one.launcher.data.CURATED_CATALOG_IDS
 import dev.one.launcher.data.PortMatcher
+import dev.one.launcher.data.RecompaAsset
+import dev.one.launcher.data.RecompaFork
+import dev.one.launcher.data.RecompaPort
 import dev.one.launcher.data.hintsFromGameTitle
 import dev.one.launcher.data.mapCatalogPort
 import dev.one.launcher.data.mergeCatalogs
@@ -261,11 +264,69 @@ class RecompaCatalogTest {
         val port = mapCatalogPort(index.ports.first { it.id == "noassets" }, "Super Nintendo")
         assertTrue(port.fileExtensions.isEmpty())
         assertFalse(port.archiveOk)
-        assertTrue(port.requiredDump.contains("File info not listed in the catalog"))
-        // File matching is disabled rather than guessed.
+        assertFalse(port.hasFileInfo)
+        // The "not listed" phrase lives on the detail page now (gated on
+        // hasFileInfo), not embedded in requiredDump.
+        assertFalse(port.requiredDump.contains("File info not listed in the catalog"))
+        // The strict extension check still refuses it...
         assertFalse(PortMatcher.matches("somegame.sfc", port))
-        assertNull(PortMatcher.matchKind("Some Game.zip", port))
-        assertNull(PortMatcher.matchKind("Some Game.sfc", port))
+        // ...but a file named after the game matches provisionally, by
+        // name only — the v1.4.1 fallback for format-less ports.
+        assertEquals(MatchKind.NAME_ONLY, PortMatcher.matchKind("Some Game.zip", port))
+        assertEquals(MatchKind.NAME_ONLY, PortMatcher.matchKind("Some Game.sfc", port))
+    }
+
+    @Test
+    fun mapsPokopiaInstructionsAndNoFormats() {
+        // The real catalog entry, constructed directly: one manual asset,
+        // an empty accepted list, instructions_md carrying the folder
+        // requirement. No formats anywhere.
+        val pokopiaIndex = RecompaPort(
+            id = "banananative-compilationfix",
+            name = "Pokopia",
+            game = "Pokopia",
+            original_platform = "switch2",
+            type = "recomp",
+            description = "Pokopia port.",
+            forks = listOf(
+                RecompaFork(
+                    repo = "Wojnstup/BananaNative-CompilationFix",
+                    packageName = "dev.nxnative.android.pokopia"
+                )
+            ),
+            assets = listOf(
+                RecompaAsset(
+                    id = "game",
+                    label = "Your Switch 2 game dump as a folder (with base/)",
+                    accepted = emptyList(),
+                    manual = true,
+                    instructionsMd = "You need your own Switch 2 game dumped " +
+                        "as a folder (with base/). .nsp and .xci files are " +
+                        "not supported, and keys are not required."
+                )
+            )
+        )
+        val port = mapCatalogPort(pokopiaIndex, "Switch 2")
+        assertTrue(port.fileExtensions.isEmpty())
+        // There IS file info (a label and instructions) — just no formats.
+        assertTrue(port.hasFileInfo)
+        assertTrue(
+            port.requiredDump.contains(
+                "Your Switch 2 game dump as a folder (with base/)"
+            )
+        )
+        // No doubled "Your own Your" and no "not listed" text.
+        assertFalse(port.requiredDump.contains("Your own Your"))
+        assertFalse(port.requiredDump.contains("File info not listed"))
+        assertTrue(port.fileInstructions.contains("folder (with base/)"))
+        assertTrue(port.fileInstructions.contains(".nsp"))
+        // And the .nup matches by name only, through the mapper's hints.
+        assertEquals(
+            MatchKind.NAME_ONLY,
+            PortMatcher.matchKind(
+                "Pokémon Pokopia [0400A3A01EE4C000][v655360].nup", port
+            )
+        )
     }
 
     @Test

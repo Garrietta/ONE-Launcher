@@ -127,6 +127,88 @@ class PortMatcherTest {
         requiredDump = "Your own Oracle of Ages ROM."
     )
 
+    // ---- Name-only matching for format-less ports (v1.4.1) ----
+
+    // Mirrors the real catalog entry (id banananative-compilationfix):
+    // one manual asset, an empty accepted list, no formats at all.
+    // Hints exactly as hintsFromGameTitle("Pokopia",
+    // "banananative-compilationfix") produces.
+    private val pokopia = Port(
+        id = "banananative-compilationfix",
+        title = "Pokopia",
+        game = "Pokopia",
+        system = "Switch 2",
+        type = "Recompilation",
+        repo = "Wojnstup/BananaNative-CompilationFix",
+        releasesUrl = "https://github.com/Wojnstup/BananaNative-CompilationFix/releases",
+        packageNames = listOf("dev.nxnative.android.pokopia"),
+        fileExtensions = emptyList(),
+        fileNameHints = listOf("pokopia", "banananative-compilationfix"),
+        requiredDump = "Your Switch 2 game dump as a folder (with base/)."
+    )
+
+    private val bananza = Port(
+        id = "donkey-kong-bananza",
+        title = "Donkey Kong Bananza",
+        game = "Donkey Kong Bananza",
+        system = "Switch 2",
+        type = "Recompilation",
+        repo = "example/bananza",
+        releasesUrl = "https://github.com/example/bananza/releases",
+        packageNames = emptyList(),
+        fileExtensions = emptyList(),
+        fileNameHints = listOf("donkey", "kong", "bananza", "donkey-kong-bananza"),
+        requiredDump = "Your own Donkey Kong Bananza game dump."
+    )
+
+    @Test
+    fun nupMatchesPokopiaByNameOnly() {
+        val ports = listOf(oot, daytona, alttpCatalog, oraclesCatalog, pokopia)
+        val kinds = PortMatcher.matchKinds(
+            "Pokémon Pokopia [0400A3A01EE4C000][v655360].nup", ports
+        )
+        assertEquals(1, kinds.size)
+        assertEquals("banananative-compilationfix", kinds.single().port.id)
+        assertEquals(MatchKind.NAME_ONLY, kinds.single().kind)
+        // The strict extension check still refuses it: the match is
+        // name-only, never a verified format. No extension is invented.
+        assertFalse(
+            PortMatcher.matches(
+                "Pokémon Pokopia [0400A3A01EE4C000][v655360].nup", pokopia
+            )
+        )
+    }
+
+    @Test
+    fun nameOnlyFallbackAppliesOnlyToFormatLessPorts() {
+        // A file named after another format-less port matches that port
+        // only, and the Pokopia file does not match it.
+        val kinds = PortMatcher.matchKinds(
+            "Donkey Kong Bananza [0100B3D01F2C000][v0].nup",
+            listOf(pokopia, bananza)
+        )
+        assertEquals(1, kinds.size)
+        assertEquals("donkey-kong-bananza", kinds.single().port.id)
+        assertEquals(MatchKind.NAME_ONLY, kinds.single().kind)
+        assertTrue(
+            PortMatcher.matchKinds(
+                "Pokémon Pokopia [0400A3A01EE4C000][v655360].nup",
+                listOf(bananza)
+            ).isEmpty()
+        )
+    }
+
+    @Test
+    fun genericTokensMatchNothingEvenForFormatLessPorts() {
+        val ports = listOf(pokopia, oot, daytona)
+        assertTrue(
+            PortMatcher.matchKinds("Some Random Game (USA).zip", ports).isEmpty()
+        )
+        assertTrue(
+            PortMatcher.matchKinds("Game (USA).nup", listOf(pokopia)).isEmpty()
+        )
+    }
+
     @Test
     fun ootZipMatchesSohOnlyNotDaytonaUsa() {
         val ports = listOf(oot, daytona, alttpCatalog, oraclesCatalog)

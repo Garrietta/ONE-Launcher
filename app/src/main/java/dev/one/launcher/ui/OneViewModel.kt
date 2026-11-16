@@ -538,7 +538,8 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             // A direct ROM file wins; otherwise the first downloaded
-            // archive whose name matches this port.
+            // archive whose name matches this port, or a name-only match
+            // for a port the catalog lists no formats for.
             val directMatch = downloadedNames.firstOrNull { PortMatcher.matches(it, port) }
             var matchName: String? = directMatch
             var matchKind: MatchKind? =
@@ -546,7 +547,8 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
             var innerEntry: String? = null
             if (directMatch == null) {
                 for (file in downloadedFiles) {
-                    if (PortMatcher.matchKind(file.name, port) == MatchKind.ARCHIVE_PROVISIONAL) {
+                    val kind = PortMatcher.matchKind(file.name, port)
+                    if (kind == MatchKind.ARCHIVE_PROVISIONAL) {
                         matchName = file.name
                         val entry = confirmed[file.name]?.get(port.id)
                         if (entry != null) {
@@ -555,6 +557,11 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
                         } else {
                             matchKind = MatchKind.ARCHIVE_PROVISIONAL
                         }
+                        break
+                    }
+                    if (kind == MatchKind.NAME_ONLY) {
+                        matchName = file.name
+                        matchKind = MatchKind.NAME_ONLY
                         break
                     }
                 }

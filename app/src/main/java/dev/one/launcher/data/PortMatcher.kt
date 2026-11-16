@@ -16,7 +16,15 @@ enum class MatchKind {
      *  file, but the contents were not (or could not be) inspected — a
      *  .7z/.rar can never be inspected here, and a .zip is only inspected
      *  once it is on this device. */
-    ARCHIVE_PROVISIONAL
+    ARCHIVE_PROVISIONAL,
+    /**
+     * Name-only, provisional: the catalog lists no file formats for this
+     * port (464/536 catalog ports have none), so there is no extension to
+     * verify — the file's name hits the port's hints through the same
+     * whole-word rules, and nothing more is claimed. The format was never
+     * verified; the UI labels it "name only" so the user is not misled.
+     */
+    NAME_ONLY
 }
 
 data class PortMatch(
@@ -43,6 +51,11 @@ data class PortMatch(
  * port's hints. A .zip that is already on this device can be confirmed by
  * inspecting its entries with [inspectZip]; .7z/.rar are never inspected
  * (no 7z library is bundled) and stay provisional.
+ *
+ * Ports the catalog lists no formats for (most of the catalog) match by
+ * name only, through the same whole-word hint rules, and are labeled
+ * provisional ([MatchKind.NAME_ONLY]) — the format was never verified,
+ * so no extension is invented for them.
  */
 object PortMatcher {
     val ARCHIVE_EXTENSIONS = listOf(".zip", ".7z", ".rar")
@@ -103,13 +116,32 @@ object PortMatcher {
 
     /**
      * Name-based match kind. DIRECT for a ROM file, ARCHIVE_PROVISIONAL
-     * for an archive whose base name hits a hint, null for no match.
-     * A provisional archive can be upgraded to ARCHIVE_CONFIRMED by
-     * [inspectZip] once the file is on this device. Never inspects file
-     * contents — pass a File to [inspectZip] for that.
+     * for an archive whose base name hits a hint, NAME_ONLY for a file
+     * whose name hits the hints of a port the catalog lists no formats
+     * for, null for no match. A provisional archive can be upgraded to
+     * ARCHIVE_CONFIRMED by [inspectZip] once the file is on this device.
+     * A name-only match is never upgraded — there is no format to verify
+     * against. Never inspects file contents — pass a File to [inspectZip]
+     * for that.
+     *
+     * The name-only branch applies ONLY when the port has no formats at
+     * all. Ports with formats keep the strict extension-gated matching
+     * above, unchanged.
      */
     fun matchKind(fileName: String, port: Port): MatchKind? {
         if (matches(fileName, port)) return MatchKind.DIRECT
+        if (port.fileExtensions.isEmpty()) {
+            // No formats in the catalog for this port: match on the
+            // game's name only, through the same whole-word hint rules
+            // as the archive path. A port with no hints at all matches
+            // nothing — nameHitsHints returns true for an empty hint
+            // list, and that must never become a match here.
+            if (port.fileNameHints.isEmpty() && port.fileNameRegex == null) {
+                return null
+            }
+            if (nameHitsHints(fileName, port)) return MatchKind.NAME_ONLY
+            return null
+        }
         if (!isArchive(fileName)) return null
         // Archives only match by name when the catalog says the port's
         // files may come in an archive (zip_ok), or for curated ports.
