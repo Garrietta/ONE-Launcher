@@ -34,8 +34,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
@@ -100,6 +102,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -133,6 +136,8 @@ import dev.one.launcher.data.RemoteDisplayFormat
 import dev.one.launcher.data.RemoteEntry
 import dev.one.launcher.data.RemoteFolderSource
 import dev.one.launcher.data.dedupeGameFiles
+import dev.one.launcher.data.fileSourceLabel
+import dev.one.launcher.data.filterGames
 import dev.one.launcher.data.formatRemoteTitle
 import dev.one.launcher.data.magnetLinkToCopy
 import dev.one.launcher.data.matchCloudFilesForGame
@@ -262,7 +267,6 @@ fun OneApp(viewModel: OneViewModel) {
                                 navController.navigate("detail/$id")
                             }
                         },
-                        onPlay = { viewModel.launchPort(it) },
                         onGoToCloud = {
                             navController.navigate(OneDestination.Cloud.route) {
                                 launchSingleTop = true
@@ -405,27 +409,29 @@ private fun LibraryScreen(
     onSelectGame: (String) -> Unit,
     onOpenGame: (String) -> Unit,
     onOpenDetail: (String) -> Unit,
-    onPlay: (String) -> Unit,
     onGoToCloud: () -> Unit
 ) {
     val statuses by viewModel.portStatuses.collectAsState()
     val selectedGameKey by viewModel.selectedGameKey.collectAsState()
-    val cloudFiles by viewModel.cloudAllFiles.collectAsState()
     val ports by viewModel.portsFlow.collectAsState()
     val games by viewModel.gamesFlow.collectAsState()
     val gamesWithFiles by viewModel.gamesWithFilesFlow.collectAsState()
     val catalogState by viewModel.catalogState.collectAsState()
+    val pairingCache by viewModel.pairingCache.collectAsState()
 
-    // Search + platform filter: the Library is games now, so it
-    // filters by game title (or a port title inside a game) and by
-    // platform. The platform options come from the games themselves,
-    // so a curated-only port's platform ("Super Nintendo") and its
-    // catalog sibling's platform name always agree. "Has files" is a
-    // third, additional filter: only games with at least one matching
-    // file (local, cloud, or server). Off by default.
-    var query by remember { mutableStateOf("") }
-    var platformFilter by remember { mutableStateOf("") } // "" = All
-    var matchesOnly by remember { mutableStateOf(false) }
+    // Search + platform filter (v1.8.2): the filter state lives in the
+    // ViewModel, not in a composable's `remember` — so navigating into
+    // a game page and back restores the previous Library state instead
+    // of resetting to the default main screen. The platform options
+    // come from the games themselves, so a curated-only port's
+    // platform ("Super Nintendo") and its catalog sibling's platform
+    // name always agree. "Has files" is a third, additional filter:
+    // only games with at least one matching file (local, cloud, or
+    // server). Off by default.
+    val libraryFilter by viewModel.libraryFilter.collectAsState()
+    val query = libraryFilter.query
+    val platformFilter = libraryFilter.platform
+    val matchesOnly = libraryFilter.matchesOnly
     LaunchedEffect(matchesOnly) {
         if (matchesOnly) viewModel.ensureAllFilesForFilter()
     }
@@ -433,14 +439,8 @@ private fun LibraryScreen(
         games.map { it.platform }.distinct().sorted()
             .map { it to it }
     }
-    val filteredGames = remember(games, query, platformFilter, matchesOnly, gamesWithFiles) {
-        games.filter { game ->
-            (platformFilter.isEmpty() || game.platform == platformFilter) &&
-                (!matchesOnly || game.key in gamesWithFiles) &&
-                (query.isBlank() ||
-                    game.title.contains(query, ignoreCase = true) ||
-                    game.ports.any { it.title.contains(query, ignoreCase = true) })
-        }
+    val filteredGames = remember(games, libraryFilter, gamesWithFiles) {
+        filterGames(games, libraryFilter, gamesWithFiles)
     }
     val catalogStatusText = when (val state = catalogState) {
         CatalogState.Loading -> "Loading the Recompa catalog…"
@@ -477,32 +477,29 @@ private fun LibraryScreen(
             onGoToCloud = onGoToCloud,
             onRefresh = { viewModel.refreshCatalog() },
             query = query,
-            onQueryChange = { query = it },
+            onQueryChange = { viewModel.setLibraryQuery(it) },
             platformOptions = platformOptions,
             selectedPlatform = platformFilter,
-            onPlatformChange = { platformFilter = it },
+            onPlatformChange = { viewModel.setLibraryPlatform(it) },
             matchesOnly = matchesOnly,
-            onMatchesOnlyChange = { matchesOnly = it },
+            onMatchesOnlyChange = { viewModel.setLibraryMatchesOnly(it) },
             catalogStatusText = catalogStatusText
         )
     } else {
         GameList(
             games = filteredGames,
             statuses = statuses,
-            cloudFiles = cloudFiles,
-            selectedGameKey = selectedGame?.key,
-            onSelectGame = onSelectGame,
+            pairingCache = pairingCache,
             onOpenGame = onOpenGame,
-            onPlay = onPlay,
             modifier = Modifier.fillMaxSize(),
             onRefresh = { viewModel.refreshCatalog() },
             query = query,
-            onQueryChange = { query = it },
+            onQueryChange = { viewModel.setLibraryQuery(it) },
             platformOptions = platformOptions,
             selectedPlatform = platformFilter,
-            onPlatformChange = { platformFilter = it },
+            onPlatformChange = { viewModel.setLibraryPlatform(it) },
             matchesOnly = matchesOnly,
-            onMatchesOnlyChange = { matchesOnly = it },
+            onMatchesOnlyChange = { viewModel.setLibraryMatchesOnly(it) },
             catalogStatusText = catalogStatusText
         )
     }
@@ -513,11 +510,8 @@ private fun LibraryScreen(
 private fun GameList(
     games: List<GameEntry>,
     statuses: Map<String, PortStatus>,
-    cloudFiles: List<PremiumizeItem>,
-    selectedGameKey: String?,
-    onSelectGame: (String) -> Unit,
+    pairingCache: Map<String, List<GameFile>>,
     onOpenGame: (String) -> Unit,
-    onPlay: (String) -> Unit,
     modifier: Modifier,
     onRefresh: () -> Unit,
     query: String,
@@ -529,25 +523,16 @@ private fun GameList(
     onMatchesOnlyChange: (Boolean) -> Unit,
     catalogStatusText: String
 ) {
-    // The selected game: the ViewModel's selection when one is set, else
-    // the first game in the filtered list — so the shelf always has a
-    // hero to show.
-    val selectedGame = remember(games, selectedGameKey) {
-        selectedGameKey?.let { key -> games.firstOrNull { it.key == key } }
-            ?: games.firstOrNull()
-    }
-    // The hero (the selected game, large, below the shelf) is a pop-up
-    // view: the X in its corner dismisses it, leaving the shelf only.
-    // Picking another game — on the shelf, or by a new search/filter
-    // selection — opens it again.
-    var heroVisible by remember { mutableStateOf(true) }
-    LaunchedEffect(selectedGame?.key) { heroVisible = true }
+    // Scroll position is saved across navigation (v1.8.2): returning
+    // from a game page restores where the list was, instead of jumping
+    // back to the top.
+    val listState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
 
     Column(modifier = modifier) {
         // The PORTSIDE header stays fixed at the top; everything
         // below it scrolls.
         LibraryHeader(onRefresh = onRefresh)
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
             // The top bar — search, "Has files", the console chips,
             // and the catalog status — scrolls away on a scroll.
             item {
@@ -575,155 +560,48 @@ private fun GameList(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                 )
             }
-            // The shelf: covers as a horizontal row of spines, one per
+            // The shelf: larger posters in a horizontal row, one per
             // game. It pins (sticky) directly under the PORTSIDE header
-            // once the top bar has scrolled away, so the user can still
-            // scroll games horizontally at the top while the selected
-            // game below gets the freed room.
+            // once the top bar has scrolled away. There is no
+            // selected-game preview below it (v1.8.2) — tapping a
+            // poster opens the game page immediately.
             stickyHeader {
                 LazyRow(
-                    modifier = Modifier.fillMaxWidth().height(216.dp)
+                    modifier = Modifier.fillMaxWidth().height(288.dp)
                         .background(MaterialTheme.colorScheme.background),
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     items(games, key = { it.key }) { game ->
                         val anyInstalled = game.ports.any { statuses[it.id]?.isInstalled == true }
+                        val anyFile = game.ports.any { statuses[it.id]?.hasFile == true } ||
+                            pairingCache.containsKey(game.key)
+                        val statusText = when {
+                            anyInstalled && anyFile -> "Ready to play"
+                            anyInstalled -> "Installed"
+                            anyFile -> "File matched"
+                            else -> "Not installed"
+                        }
+                        val sourceLabel = pairingCache[game.key]?.firstOrNull()
+                            ?.let { fileSourceLabel(it) }
                         GameSpine(
                             game = game,
-                            selected = game.key == selectedGame?.key,
                             isInstalled = anyInstalled,
-                            onClick = {
-                                heroVisible = true
-                                onSelectGame(game.key)
-                            }
+                            statusText = statusText,
+                            sourceLabel = sourceLabel,
+                            onClick = { onOpenGame(game.key) }
                         )
                     }
                 }
             }
-            // Folded hero: the selected game large, with its title and
-            // actions. Tapping anywhere on it — the art, the title,
-            // the empty space — opens the game page, not only the
-            // "View game" button. The X in the corner dismisses just
-            // this pop-up view, leaving the shelf only.
-            if (selectedGame != null && heroVisible) {
-                item {
-                    val anyInstalled = selectedGame.ports.any {
-                        statuses[it.id]?.isInstalled == true
-                    }
-                    val firstInstalled = selectedGame.ports.firstOrNull {
-                        statuses[it.id]?.isInstalled == true
-                    }
-                    val anyFile = selectedGame.ports.any {
-                        statuses[it.id]?.hasFile == true
-                    }
-                    val hasCloudFile = cloudFiles.any { item ->
-                        selectedGame.ports.any { port ->
-                            PortMatcher.matchKind(item.name, port, item.link) != null
-                        }
-                    }
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onOpenGame(selectedGame.key) }
-                    ) {
-                        Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                            if (selectedGame.coverArtUrl.isNotBlank()) {
-                                AsyncImage(
-                                    model = selectedGame.coverArtUrl,
-                                    contentDescription = null,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(220.dp)
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                                )
-                                Spacer(modifier = Modifier.height(12.dp))
-                            }
-                            Text(
-                                text = selectedGame.title,
-                                style = MaterialTheme.typography.headlineSmall
-                            )
-                            Text(
-                                text = selectedGame.platform,
-                                style = MaterialTheme.typography.titleMedium
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = if (selectedGame.ports.size == 1) {
-                                    "1 port"
-                                } else {
-                                    "${selectedGame.ports.size} ports"
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                StatusChip(text = when {
-                                    anyInstalled && anyFile -> "Ready to play"
-                                    anyInstalled -> "Installed"
-                                    anyFile -> "File matched"
-                                    else -> "Not installed"
-                                })
-                                val fileText = when {
-                                    anyFile -> "File on device"
-                                    hasCloudFile -> "File in cloud"
-                                    else -> null
-                                }
-                                if (fileText != null) {
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Surface(
-                                        color = MaterialTheme.colorScheme.secondaryContainer,
-                                        shape = MaterialTheme.shapes.small
-                                    ) {
-                                        Text(
-                                            text = fileText,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            modifier = Modifier.padding(
-                                                horizontal = 8.dp,
-                                                vertical = 4.dp
-                                            )
-                                        )
-                                    }
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                if (firstInstalled != null) {
-                                    Button(onClick = { onPlay(firstInstalled.id) }) {
-                                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Play")
-                                    }
-                                }
-                                OutlinedButton(onClick = { onOpenGame(selectedGame.key) }) {
-                                    Text("View game")
-                                }
-                            }
-                        }
-                        // The X: dismisses just this pop-up view.
-                        // It is a sibling of the tappable hero column,
-                        // so tapping it closes without opening the page.
-                        IconButton(
-                            onClick = { heroVisible = false },
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(8.dp)
-                                .background(
-                                    Color.Black.copy(alpha = 0.6f),
-                                    CircleShape
-                                )
-                        ) {
-                            Icon(
-                                Icons.Filled.Close,
-                                contentDescription = "Close selected game",
-                                tint = Color.White
-                            )
-                        }
-                    }
-                }
+            // Space below the shelf so the list can scroll (v1.7.0):
+            // the top bar collapses and the shelf pins under the
+            // header. The shelf is the Library's content now — there
+            // is no hero below it — so without this the list would be
+            // too short to scroll at all. It adds no visible content:
+            // the empty space below the shelf is already there.
+            item {
+                Spacer(modifier = Modifier.fillParentMaxHeight(0.75f))
             }
         }
     }
@@ -855,6 +733,9 @@ private fun UnfoldedLibrary(
     // The detail pane starts open (it shows the selected game) and
     // closes with its X. Selecting a game reopens it.
     var detailOpen by remember { mutableStateOf(true) }
+    // Grid scroll position is saved across navigation (v1.8.2), like
+    // the folded list's.
+    val gridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
     val selectedPort = selectedPortId?.let { viewModel.portById(it) }
     // The pane is only visible when it has something to show; with
     // no game or port selected (an empty Library) the grid takes the
@@ -885,6 +766,7 @@ private fun UnfoldedLibrary(
         Row(modifier = Modifier.weight(1f)) {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(unfoldedGridColumns(detailVisible)),
+                state = gridState,
                 modifier = Modifier.weight(if (detailVisible) 0.42f else 1f),
                 contentPadding = PaddingValues(16.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -1036,28 +918,28 @@ private fun GameGridCard(
 }
 
 /**
- * One spine on the shelf: the game's cover art, portrait, with its
- * title and platform underneath. The selected spine carries a lime
- * outline; a game with any port installed carries a small lime play
- * mark on the cover.
+ * One poster on the shelf (v1.8.2): the game's cover art, portrait
+ * and larger than the old spine, with its title and platform
+ * underneath. Tapping it opens the game page immediately — there is
+ * no selected-game preview anymore. The status ("Not installed",
+ * "File matched", ...) and the file source tag (Premiumize / the
+ * remote folder's name / Local) ride on the art, so the shelf shows
+ * at a glance which games have a file and where it lives. A game
+ * with any port installed carries a small lime play mark on the cover.
  */
 @Composable
 private fun GameSpine(
     game: GameEntry,
-    selected: Boolean,
     isInstalled: Boolean,
+    statusText: String,
+    sourceLabel: String?,
     onClick: () -> Unit
 ) {
-    Column(modifier = Modifier.width(112.dp)) {
+    Column(modifier = Modifier.width(160.dp)) {
         Card(
             onClick = onClick,
-            modifier = Modifier.size(width = 112.dp, height = 160.dp),
+            modifier = Modifier.size(width = 160.dp, height = 224.dp),
             shape = RoundedCornerShape(8.dp),
-            border = if (selected) {
-                BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
-            } else {
-                null
-            },
             colors = CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.surfaceVariant
             )
@@ -1100,6 +982,41 @@ private fun GameSpine(
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(16.dp)
                         )
+                    }
+                }
+                // Status + source, stacked at the bottom of the art.
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.6f),
+                        shape = MaterialTheme.shapes.small
+                    ) {
+                        Text(
+                            text = statusText,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                        )
+                    }
+                    if (sourceLabel != null) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer
+                                .copy(alpha = 0.9f),
+                            shape = MaterialTheme.shapes.small
+                        ) {
+                            Text(
+                                text = sourceLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.padding(
+                                    horizontal = 6.dp,
+                                    vertical = 3.dp
+                                )
+                            )
+                        }
                     }
                 }
             }
@@ -1894,6 +1811,7 @@ private fun GamePageContent(
     val copyMessages by viewModel.copyMessage.collectAsState()
     val extractMessages by viewModel.extractMessage.collectAsState()
     val repoStars by viewModel.repoStars.collectAsState()
+    val pairingCache by viewModel.pairingCache.collectAsState()
 
     // Ranked ports: GitHub stars when known, else the catalog's
     // download counts, ports with neither last.
@@ -1927,8 +1845,16 @@ private fun GamePageContent(
         }
         matchLocalFilesForGame(detectedFiles, states, game.ports)
     }
-    val gameFiles = remember(cloudMatches, serverMatches, localMatches) {
-        dedupeGameFiles(localMatches + cloudMatches + serverMatches)
+    // Cached files for this game (v1.8.2): the pairing cache
+    // pre-populates the page before the live sources finish loading.
+    // Live files win on a name clash — the cached copy only fills a
+    // gap the live match has not produced yet.
+    val cachedForGame = pairingCache[game.key].orEmpty()
+    val gameFiles = remember(cloudMatches, serverMatches, localMatches, cachedForGame) {
+        val live = dedupeGameFiles(localMatches + cloudMatches + serverMatches)
+        val liveNames = live.map { it.name.lowercase() }.toSet()
+        val extra = cachedForGame.filter { it.name.lowercase() !in liveNames }
+        dedupeGameFiles(live + extra)
     }
 
     // Fetch this game's star counts and make sure its cloud and server
@@ -2118,6 +2044,20 @@ private fun GameFileRow(
                 text = "${file.where} · ${matchKindLabel(file.kind, file.downloadedInnerEntry)}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        // The source tag (v1.8.2): where the file comes from, as a
+        // clear chip — Premiumize, the remote folder's name, or Local.
+        // The match kind stays the secondary label in the subtitle.
+        Surface(
+            color = MaterialTheme.colorScheme.primaryContainer,
+            shape = MaterialTheme.shapes.small
+        ) {
+            Text(
+                text = fileSourceLabel(file),
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
             )
         }
     }

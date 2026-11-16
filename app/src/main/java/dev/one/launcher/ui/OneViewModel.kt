@@ -13,16 +13,19 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import dev.one.launcher.data.CachedGameFile
 import dev.one.launcher.data.CustomLink
 import dev.one.launcher.data.CustomLinksStore
 import dev.one.launcher.data.DetectedFile
 import dev.one.launcher.data.DownloadRepository
 import dev.one.launcher.data.DownloadState
 import dev.one.launcher.data.GameEntry
+import dev.one.launcher.data.GameFile
 import dev.one.launcher.data.GitHubAsset
 import dev.one.launcher.data.GitHubRelease
 import dev.one.launcher.data.GitHubReleasesApi
 import dev.one.launcher.data.GitHubStarsApi
+import dev.one.launcher.data.LibraryFilter
 import dev.one.launcher.data.LocalFileState
 import dev.one.launcher.data.LocalFolder
 import dev.one.launcher.data.LocalFolderScanner
@@ -30,6 +33,9 @@ import dev.one.launcher.data.LocalFolderStore
 import dev.one.launcher.data.MatchKind
 import dev.one.launcher.data.MatchedFile
 import dev.one.launcher.data.MatchedFilesStore
+import dev.one.launcher.data.PAIRING_CACHE_VERSION
+import dev.one.launcher.data.PairingCache
+import dev.one.launcher.data.PairingCacheStore
 import dev.one.launcher.data.PortCatalogRepository
 import dev.one.launcher.data.PortMatcher
 import dev.one.launcher.data.PortSettings
@@ -56,16 +62,18 @@ import dev.one.launcher.data.StarEntry
 import dev.one.launcher.data.compareVersions
 import dev.one.launcher.data.filterRemoteEntriesToGameFiles
 import dev.one.launcher.data.findGame
-import dev.one.launcher.data.gamesWithFiles
 import dev.one.launcher.data.groupPortsByGame
 import dev.one.launcher.data.isStarFresh
 import dev.one.launcher.data.mapCatalogPort
 import dev.one.launcher.data.mergeCatalogs
 import dev.one.launcher.data.normalizeCustomLinkUrl
 import dev.one.launcher.data.normalizeRemoteFolderUrl
+import dev.one.launcher.data.pairGamesWithFiles
 import dev.one.launcher.data.pickApkAsset
 import dev.one.launcher.data.resolveDetected
 import dev.one.launcher.data.sha256Matches
+import dev.one.launcher.data.toCached
+import dev.one.launcher.data.toGameFile
 import dev.one.launcher.model.Port
 import dev.one.launcher.model.PortCatalog
 import dev.one.launcher.model.PortFork
@@ -310,7 +318,10 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     private val _copyMessage = MutableStateFlow<Map<String, String>>(emptyMap())
     val copyMessage: StateFlow<Map<String, String>> = _copyMessage.asStateFlow()
 
-    /** Guards the background folder scan so refreshes cannot stack scans. */
+    /** Guards the background folder scan so refreshes cannot stack scans.
+     *  Volatile: the pairing-cache settle check reads it from the
+     *  combine's background thread. */
+    @Volatile
     private var localScanRunning = false
 
     /** (folder id, display name), root first. */
@@ -363,6 +374,61 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
      */
     private val _gamesWithFiles = MutableStateFlow<Set<String>>(emptySet())
     val gamesWithFilesFlow: StateFlow<Set<String>> = _gamesWithFiles.asStateFlow()
+
+    /**
+     * Library filter state (v1.8.2): the search query, platform
+     * filter, and "Has files" toggle. They live here, not in a
+     * composable's `remember` — so navigating into a game page and
+     * back restores the previous Library state instead of resetting
+     * to the default main screen.
+     */
+    private val _libraryFilter = MutableStateFlow(LibraryFilter())
+    val libraryFilter: StateFlow<LibraryFilter> = _libraryFilter.asStateFlow()
+
+    fun setLibraryQuery(query: String) {
+        _libraryFilter.value = _libraryFilter.value.copy(query = query)
+    }
+
+    fun setLibraryPlatform(platform: String) {
+        _libraryFilter.value = _libraryFilter.value.copy(platform = platform)
+    }
+
+    fun setLibraryMatchesOnly(matchesOnly: Boolean) {
+        _libraryFilter.value = _libraryFilter.value.copy(matchesOnly = matchesOnly)
+    }
+
+    /**
+     * Pairing cache (v1.8.2): per-game matched files (game key ->
+     * files), loaded from disk on startup and refreshed in the
+     * background. The Library, the "Has files" filter, the poster
+     * source tags, and the game pages read from it, so they populate
+     * immediately instead of waiting on a re-run of the match.
+     */
+    private val _pairingCache = MutableStateFlow<Map<String, List<GameFile>>>(emptyMap())
+    val pairingCache: StateFlow<Map<String, List<GameFile>>> =
+        _pairingCache.asStateFlow()
+
+    /** Replace the pairing cache state. */
+    private fun setPairingCache(map: Map<String, List<GameFile>>) {
+        _pairingCache.value = map
+    }
+
+    private val pairingCacheStore = PairingCacheStore(application)
+
+    /**
+     * True once the pairing cache has been loaded (or found absent)
+     * on startup. The background refresh must not overwrite the cache
+     * before this — a settled live computation running before the
+     * cache loads would wipe it with a partial result.
+     */
+    private var pairingCacheLoaded = false
+
+    /**
+     * The cached form of the last pairing map saved (or loaded), so
+     * the background refresh only rewrites the store when the
+     * pairings actually changed.
+     */
+    private var lastSavedPairings: Map<String, List<CachedGameFile>> = emptyMap()
 
     private val starsApi = GitHubStarsApi()
     private val starCacheStore = StarCacheStore(application)
@@ -470,6 +536,10 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
                         _remoteBrowserFormat.value = updated.displayFormat
                     }
                 }
+                // The pairing cache's background refresh needs every
+                // remote folder's listing, so fetch them eagerly once
+                // per session instead of waiting for a game page open.
+                ensureServerListings()
             }
         }
         // Restore a saved Premiumize session, if the user linked one before.
@@ -487,6 +557,26 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
                 resolveDetected(cached, fresh = null, folderAvailable = folder != null)
             rebuildStatuses()
             if (folder != null) scanLocalFolder()
+        }
+        // Pairing cache (v1.8.2): load the saved pairings first so the
+        // Library and "Has files" populate immediately, then the
+        // background refresh replaces them with fresh results. A
+        // wrong-version or corrupt cache reads as null and is ignored.
+        viewModelScope.launch {
+            val cache = try {
+                pairingCacheStore.load()
+            } catch (e: Exception) {
+                null
+            }
+            if (cache != null) {
+                lastSavedPairings = cache.pairings
+                val map = cache.pairings.mapValues { (_, files) ->
+                    files.mapNotNull { it.toGameFile() }
+                }.filterValues { it.isNotEmpty() }
+                setPairingCache(map)
+                _gamesWithFiles.value = map.keys
+            }
+            pairingCacheLoaded = true
         }
         // "Games with matches" filter state: the game keys with at
         // least one matching file. Recomputed on a background thread
@@ -526,13 +616,69 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
                         assignedFileName = status?.assignedFile?.name
                     )
                 }
-                gamesWithFiles(
+                // The full pairing map (game key -> files); the "Has
+                // files" set is its keys. Computing the map costs the
+                // same matching the set did — the per-game files are
+                // the same work, grouped.
+                pairGamesWithFiles(
                     games, cloudFiles, cloudFallback, serverSources,
                     detected, localStates
                 )
             }
                 .flowOn(Dispatchers.Default)
-                .collect { keys -> _gamesWithFiles.value = keys }
+                .collect { pairingMap ->
+                    // The cache pre-populates _gamesWithFiles on
+                    // startup; the live result only replaces it once
+                    // the refresh is settled (every source loaded), so
+                    // a partial pass can never wipe the cached
+                    // pairings — and the cache is never overwritten
+                    // before it has even been loaded.
+                    if (!pairingCacheLoaded) return@collect
+                    if (!isPairingRefreshSettled()) return@collect
+                    savePairingCacheIfChanged(pairingMap)
+                }
+        }
+    }
+
+    /**
+     * True when every file source has finished loading (or is not
+     * configured), so a pairing computation is a complete picture and
+     * safe to cache. A source that failed still counts as settled —
+     * it produced an empty result, not a pending one.
+     */
+    private fun isPairingRefreshSettled(): Boolean {
+        if (_games.value.isEmpty()) return false
+        if (isCloudConnected && !_cloudAllLoaded.value) return false
+        if (_serverLoading.value.isNotEmpty()) return false
+        if (_remoteFolders.value.any { it.id !in _serverListings.value }) return false
+        if (localScanRunning) return false
+        return true
+    }
+
+    /**
+     * Overwrite the pairing cache with a fresh pairing map, when it
+     * actually changed. Also moves the live "Has files" set to the new
+     * map's keys. The store write is best-effort; the in-memory
+     * pairings stand even if it fails.
+     */
+    private fun savePairingCacheIfChanged(map: Map<String, List<GameFile>>) {
+        val cachedForm = map.mapValues { (_, files) -> files.map { it.toCached() } }
+        if (cachedForm == lastSavedPairings) return
+        lastSavedPairings = cachedForm
+        setPairingCache(map)
+        _gamesWithFiles.value = map.keys
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                pairingCacheStore.save(
+                    PairingCache(
+                        PAIRING_CACHE_VERSION,
+                        System.currentTimeMillis(),
+                        cachedForm
+                    )
+                )
+            } catch (e: Exception) {
+                // Cache write is best-effort; the in-memory pairings stand.
+            }
         }
     }
 

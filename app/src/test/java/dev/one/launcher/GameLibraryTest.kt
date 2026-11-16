@@ -1,24 +1,35 @@
 package dev.one.launcher
 
+import dev.one.launcher.data.CachedGameFile
 import dev.one.launcher.data.DetectedFile
 import dev.one.launcher.data.GameEntry
+import dev.one.launcher.data.GameFile
 import dev.one.launcher.data.GameFileSource
+import dev.one.launcher.data.LibraryFilter
 import dev.one.launcher.data.LocalFileState
 import dev.one.launcher.data.MatchKind
+import dev.one.launcher.data.PAIRING_CACHE_VERSION
+import dev.one.launcher.data.PairingCache
 import dev.one.launcher.data.PremiumizeItem
 import dev.one.launcher.data.PortMatcher
 import dev.one.launcher.data.RemoteEntry
 import dev.one.launcher.data.STAR_CACHE_TTL_MS
 import dev.one.launcher.data.dedupeGameFiles
+import dev.one.launcher.data.fileSourceLabel
+import dev.one.launcher.data.filterGames
 import dev.one.launcher.data.gamesWithFiles
 import dev.one.launcher.data.groupPortsByGame
 import dev.one.launcher.data.hintsFromGameTitle
+import dev.one.launcher.data.isPairingCacheUsable
 import dev.one.launcher.data.isStarFresh
 import dev.one.launcher.data.matchCloudFilesForGame
 import dev.one.launcher.data.matchLocalFilesForGame
 import dev.one.launcher.data.matchServerFilesForGame
 import dev.one.launcher.data.normalizeForTokens
+import dev.one.launcher.data.pairGamesWithFiles
 import dev.one.launcher.data.rankPortsByStars
+import dev.one.launcher.data.toCached
+import dev.one.launcher.data.toGameFile
 import dev.one.launcher.data.unfoldedGridColumns
 import dev.one.launcher.model.Port
 import org.junit.Assert.assertEquals
@@ -818,6 +829,273 @@ class GameLibraryTest {
         // rendering itself is Compose UI, not JVM-testable.
         assertEquals(3, unfoldedGridColumns(true))
         assertEquals(5, unfoldedGridColumns(false))
+    }
+
+    // ---- v1.8.2: Library filter state, source tag, pairing cache ----
+
+    // Mirrors the real catalog entry for Breath of the Wild
+    // (Switch), copied from PortMatcherTest — no catalog formats,
+    // so it matches by name only.
+    private val botw = Port(
+        id = "breath-of-the-wild",
+        title = "The Legend of Zelda: Breath of the Wild",
+        game = "The Legend of Zelda: Breath of the Wild",
+        system = "Switch",
+        type = "Recompilation",
+        repo = "example/botw",
+        releasesUrl = "https://github.com/example/botw/releases",
+        packageNames = emptyList(),
+        fileExtensions = emptyList(),
+        fileNameHints = listOf("breath", "wild", "breath-of-the-wild"),
+        distinctiveNameHints = listOf("breath", "wild", "breath-of-the-wild"),
+        platformId = "switch",
+        platformName = "Switch",
+        requiredDump = "Your own Breath of the Wild game dump."
+    )
+
+    @Test
+    fun filterGamesByQueryAndPlatform() {
+        val games = groupPortsByGame(listOf(eidos, pokopia, soh, twoShip))
+        assertTrue(filterGames(games, LibraryFilter(query = "mario"), emptySet()).isEmpty())
+        assertEquals(2, filterGames(games, LibraryFilter(query = "zelda"), emptySet()).size)
+        val n64 = filterGames(games, LibraryFilter(platform = "Nintendo 64"), emptySet())
+        assertEquals(2, n64.size)
+        assertTrue(n64.all { it.platform == "Nintendo 64" })
+    }
+
+    @Test
+    fun filterGamesMatchesOnlyKeepsGamesWithFiles() {
+        val games = groupPortsByGame(listOf(eidos, pokopia, arceus))
+        val eidosGame = games.first { it.title == "Pokémon Black & White" }
+        val only = filterGames(
+            games,
+            LibraryFilter(matchesOnly = true),
+            setOf(eidosGame.key)
+        )
+        assertEquals(listOf(eidosGame.key), only.map { it.key })
+        // matchesOnly composes with the query.
+        val none = filterGames(
+            games,
+            LibraryFilter(query = "pokopia", matchesOnly = true),
+            setOf(eidosGame.key)
+        )
+        assertTrue(none.isEmpty())
+    }
+
+    @Test
+    fun libraryFilterSurvivesGameNavigation() {
+        // v1.8.2 nav-state fix: the filter lives in the ViewModel (a
+        // single LibraryFilter flow), not in a composable's remember —
+        // so opening a game page and coming back does not reset it.
+        // Selecting a game never touches the filter; the same filter
+        // still selects the same games afterwards.
+        val games = groupPortsByGame(listOf(eidos, pokopia, soh))
+        val withFiles = setOf(
+            games.first { it.title == "Pokémon Black & White" }.key,
+            games.first { it.title == "The Legend of Zelda: Ocarina of Time" }.key
+        )
+        val filter = LibraryFilter(query = "zelda", matchesOnly = true)
+        val before = filterGames(games, filter, withFiles)
+        // "Navigate" into a game page and back: the filter object is
+        // untouched by the navigation (selectGame only changes the
+        // selected game key), so the filtered list is identical.
+        val after = filterGames(games, filter, withFiles)
+        assertEquals(before.map { it.key }, after.map { it.key })
+        assertEquals(1, after.size)
+        assertEquals("The Legend of Zelda: Ocarina of Time", after.single().title)
+        // The default filter is the default screen: no query, no
+        // platform, matches off.
+        assertEquals(
+            LibraryFilter(),
+            LibraryFilter(query = "", platform = "", matchesOnly = false)
+        )
+    }
+
+    @Test
+    fun fileSourceLabelReadsLocalPremiumizeAndRemoteFolderName() {
+        val local = GameFile(
+            name = "Pokemon Black (NDS) (USA)",
+            kind = MatchKind.NAME_ONLY,
+            source = GameFileSource.LOCAL,
+            portId = "eidos",
+            where = "Found in your folder"
+        )
+        assertEquals("Local", fileSourceLabel(local))
+        val cloud = GameFile(
+            name = "Pokémon Pokopia [0400A3A01EE4C000][v655360].nup",
+            kind = MatchKind.NAME_ONLY,
+            source = GameFileSource.CLOUD,
+            portId = "banananative-compilationfix",
+            where = "Premiumize",
+            premiumizeItem = PremiumizeItem(
+                id = "abc",
+                name = "Pokémon Pokopia [0400A3A01EE4C000][v655360].nup"
+            )
+        )
+        assertEquals("Premiumize", fileSourceLabel(cloud))
+        val server = GameFile(
+            name = "Pokemon Black (NDS) (USA)",
+            kind = MatchKind.NAME_ONLY,
+            source = GameFileSource.SERVER,
+            portId = "eidos",
+            where = "json",
+            remoteSourceName = "json",
+            remoteUrl = "https://example.com/pokemon-black.zip"
+        )
+        assertEquals("json", fileSourceLabel(server))
+        // No remote name falls back to the where label.
+        val serverNoName = server.copy(remoteSourceName = null, where = "My server")
+        assertEquals("My server", fileSourceLabel(serverNoName))
+    }
+
+    @Test
+    fun pairGamesWithFilesAggregatesAllSourcesAndDedupes() {
+        val games = groupPortsByGame(listOf(eidos, pokopia, soh))
+        val eidosGame = games.first { it.title == "Pokémon Black & White" }
+        val pokopiaGame = games.first { it.title == "Pokopia" }
+        val map = pairGamesWithFiles(
+            games = games,
+            cloudItems = listOf(
+                PremiumizeItem(name = "Pokémon Pokopia [0400A3A01EE4C000][v655360].nup")
+            ),
+            cloudFallback = emptyMap(),
+            serverSources = listOf(
+                "json" to listOf(
+                    RemoteEntry(
+                        name = "Pokemon Black (NDS) (USA)",
+                        url = "https://example.com/pokemon-black.zip",
+                        isFolder = false
+                    ),
+                    // Same file in the server and the cloud is listed once.
+                    RemoteEntry(
+                        name = "Pokémon Pokopia [0400A3A01EE4C000][v655360].nup",
+                        url = "https://example.com/pokopia.nup",
+                        isFolder = false
+                    )
+                )
+            ),
+            detected = emptyMap(),
+            localStates = emptyMap()
+        )
+        assertEquals(2, map.size)
+        assertEquals(1, map[eidosGame.key]!!.size)
+        assertEquals("Pokemon Black (NDS) (USA)", map[eidosGame.key]!!.single().name)
+        assertEquals(GameFileSource.SERVER, map[eidosGame.key]!!.single().source)
+        // Pokopia's .nup appears once (cloud wins the dedupe over the
+        // server copy of the same name).
+        assertEquals(1, map[pokopiaGame.key]!!.size)
+        assertEquals(GameFileSource.CLOUD, map[pokopiaGame.key]!!.single().source)
+        // SoH has no file in any source and is absent from the map.
+        assertFalse(map.containsKey(games.first { it.title.contains("Ocarina") }.key))
+    }
+
+    @Test
+    fun pairGamesWithFilesStillBlocksWiiUFileForSwitchBotw() {
+        // The v1.8.1 platform-consistency rule still holds at the
+        // game level: the Wii U .7z is not a file for the Switch game.
+        val games = groupPortsByGame(listOf(botw, eidos))
+        val botwGame = games.first { it.title == "The Legend of Zelda: Breath of the Wild" }
+        val url = "https://archive.org/download/wii-u-retail-nus-usa/" +
+            "The%20Legend%20of%20Zelda%20Breath%20of%20the%20Wild%20" +
+            "%5B00050000101C9400%5D.7z"
+        val map = pairGamesWithFiles(
+            games = games,
+            cloudItems = emptyList(),
+            cloudFallback = emptyMap(),
+            serverSources = listOf(
+                "json" to listOf(
+                    RemoteEntry(
+                        name = "Legend of Zelda Breath of the Wild (Wii U) (USA)",
+                        url = url,
+                        isFolder = false
+                    ),
+                    RemoteEntry(
+                        name = "Pokemon Black (NDS) (USA)",
+                        url = "https://example.com/pokemon-black.zip",
+                        isFolder = false
+                    )
+                )
+            ),
+            detected = emptyMap(),
+            localStates = emptyMap()
+        )
+        assertFalse(map.containsKey(botwGame.key))
+        // Eidos still matches its file.
+        assertTrue(map.containsKey(games.first { it.title == "Pokémon Black & White" }.key))
+    }
+
+    @Test
+    fun pairingCacheRoundTripsEverySource() {
+        val files = listOf(
+            GameFile(
+                name = "Pokemon Black (NDS) (USA)",
+                kind = MatchKind.NAME_ONLY,
+                source = GameFileSource.LOCAL,
+                portId = "eidos",
+                where = "Found in your folder",
+                detected = DetectedFile(
+                    name = "Pokemon Black (NDS) (USA)",
+                    uri = "content://example/pokemon-black",
+                    kind = MatchKind.NAME_ONLY
+                )
+            ),
+            GameFile(
+                name = "Pokémon Pokopia [0400A3A01EE4C000][v655360].nup",
+                kind = MatchKind.NAME_ONLY,
+                source = GameFileSource.CLOUD,
+                portId = "banananative-compilationfix",
+                where = "Premiumize",
+                premiumizeItem = PremiumizeItem(
+                    id = "abc",
+                    name = "Pokémon Pokopia [0400A3A01EE4C000][v655360].nup"
+                )
+            ),
+            GameFile(
+                name = "Pokemon Black (NDS) (USA)",
+                kind = MatchKind.NAME_ONLY,
+                source = GameFileSource.SERVER,
+                portId = "eidos",
+                where = "json",
+                remoteSourceName = "json",
+                remoteUrl = "https://example.com/pokemon-black.zip"
+            )
+        )
+        for (file in files) {
+            val restored = file.toCached().toGameFile()
+            assertEquals(file, restored)
+        }
+        // A Premiumize download link is never cached: a file that has
+        // one loses it in the round-trip (the app re-fetches it on
+        // demand via itemDetails when the user taps Download).
+        val cloudFile = files[1]
+        val withLink = cloudFile.copy(
+            premiumizeItem = cloudFile.premiumizeItem!!.copy(
+                link = "https://example.com/dl/abc"
+            )
+        )
+        assertEquals("https://example.com/dl/abc", withLink.premiumizeItem!!.link)
+        assertNull(withLink.toCached().premiumizeItem?.link)
+        assertNull(withLink.toCached().toGameFile()?.premiumizeItem?.link)
+        // An unknown kind or source decodes as "not this file".
+        val badKind = files[0].toCached().copy(kind = "NO_SUCH_KIND")
+        assertNull(badKind.toGameFile())
+        val badSource = files[0].toCached().copy(source = "NO_SUCH_SOURCE")
+        assertNull(badSource.toGameFile())
+    }
+
+    @Test
+    fun pairingCacheVersionMismatchIsNotUsable() {
+        assertTrue(
+            isPairingCacheUsable(
+                PairingCache(PAIRING_CACHE_VERSION, 0L, emptyMap())
+            )
+        )
+        assertFalse(
+            isPairingCacheUsable(
+                PairingCache(PAIRING_CACHE_VERSION + 1, 0L, emptyMap())
+            )
+        )
+        assertFalse(isPairingCacheUsable(null))
     }
 }
 

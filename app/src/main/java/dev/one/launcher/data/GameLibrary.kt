@@ -382,3 +382,93 @@ fun gamesWithFiles(
         .toSet()
 }
 
+// ---- Library filter state (v1.8.2) ----
+
+/**
+ * The Library's filter state: search query, platform filter, and the
+ * "Has files" toggle. It lives in the ViewModel, not in a composable's
+ * `remember` — so navigating into a game page and back restores the
+ * previous Library state instead of resetting to the default main
+ * screen. A plain value object, so the filter itself is unit-testable
+ * without the UI.
+ */
+data class LibraryFilter(
+    val query: String = "",
+    val platform: String = "",
+    val matchesOnly: Boolean = false
+)
+
+/**
+ * The Library's game filter, as a pure function of the games, the
+ * filter state, and the set of games with files. Filters by game
+ * title (or a port title inside a game) and by platform; "Has files"
+ * keeps only games with at least one matching file. The same rule the
+ * Library screen applies.
+ */
+fun filterGames(
+    games: List<GameEntry>,
+    filter: LibraryFilter,
+    gamesWithFiles: Set<String>
+): List<GameEntry> = games.filter { game ->
+    (filter.platform.isEmpty() || game.platform == filter.platform) &&
+        (!filter.matchesOnly || game.key in gamesWithFiles) &&
+        (filter.query.isBlank() ||
+            game.title.contains(filter.query, ignoreCase = true) ||
+            game.ports.any { it.title.contains(filter.query, ignoreCase = true) })
+}
+
+// ---- File source label (v1.8.2) ----
+
+/**
+ * The clear source label for a file, for the poster tag and the game
+ * page file row: where the file comes from. Local files read "Local";
+ * cloud files read "Premiumize"; server files read the remote folder's
+ * configured name (e.g. "json"). The match kind stays a secondary
+ * label — the source is the primary tag.
+ */
+fun fileSourceLabel(file: GameFile): String = when (file.source) {
+    GameFileSource.LOCAL -> "Local"
+    GameFileSource.CLOUD -> "Premiumize"
+    GameFileSource.SERVER ->
+        file.remoteSourceName?.takeIf { it.isNotBlank() } ?: file.where
+}
+
+// ---- Full pairing computation (v1.8.2) ----
+
+/**
+ * The full pairing computation: every game's matched files, from all
+ * three owned sources, aggregated and deduped by file name (on-device
+ * first, then cloud, then server) — the same matching the game page
+ * does for one game, run for the whole Library. The result is the
+ * pairing cache's content: game key -> files, only for games with at
+ * least one file. The cloud side mirrors [gamesWithFiles]: the flat
+ * listAll when present, else the per-port search fallbacks. Pure, so
+ * the background refresh can run it on a background thread and the
+ * cache round-trip is unit-testable.
+ */
+fun pairGamesWithFiles(
+    games: List<GameEntry>,
+    cloudItems: List<PremiumizeItem>,
+    cloudFallback: Map<String, List<PremiumizeItem>>,
+    serverSources: List<Pair<String, List<RemoteEntry>>>,
+    detected: Map<String, List<DetectedFile>>,
+    localStates: Map<String, LocalFileState>
+): Map<String, List<GameFile>> {
+    val out = mutableMapOf<String, List<GameFile>>()
+    for (game in games) {
+        val cloud = matchCloudFilesForGame(
+            if (cloudItems.isNotEmpty()) {
+                cloudItems
+            } else {
+                game.ports.flatMap { cloudFallback[it.id].orEmpty() }
+            },
+            game.ports
+        )
+        val server = matchServerFilesForGame(serverSources, game.ports)
+        val local = matchLocalFilesForGame(detected, localStates, game.ports)
+        val files = dedupeGameFiles(local + cloud + server)
+        if (files.isNotEmpty()) out[game.key] = files
+    }
+    return out
+}
+

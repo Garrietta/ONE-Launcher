@@ -1,5 +1,48 @@
 # Changelog
 
+## v1.8.2 — 2026-11-16
+
+Library navigation, folded layout, file source tags, and a pairing
+cache. The matcher rules are unchanged (platform-consistency,
+90% title similarity, and the extension gate all still hold —
+verified over the full merged catalog: no true positive lost).
+
+- Navigation state: the Library's search query, platform filter, and
+  "Has files" setting now live in the ViewModel (a single
+  LibraryFilter flow), not in a composable's `remember` — so exiting
+  a game detail page back to the Library restores the previous state
+  instead of clearing the search and filter and jumping to the top.
+  The list and grid scroll positions are saved too
+  (`rememberSaveable` + `LazyListState.Saver` / `LazyGridState.Saver`).
+- Folded layout: the selected-game preview/hero panel below the shelf
+  is gone. The folded Library is a larger horizontal row of larger
+  game posters (160×224dp, shelf 288dp tall). Tapping a poster opens
+  the game detail page immediately — no preview step. The shelf is
+  still a stickyHeader pinned under the PORTSIDE header (the top bar
+  still collapses on scroll); the unfolded layout (grid + detail
+  pane) is unchanged.
+- File source tag: each game page file row carries a clear chip for
+  where the file comes from — "Premiumize", the remote folder's
+  configured name (e.g. "json"), or "Local". The shelf posters show
+  the source tag too, stacked under the status ("Not installed" /
+  "File matched" / "Installed" / "Ready to play"). The match kind
+  (name only / direct / archive) stays as the secondary label in the
+  file row subtitle.
+- Pairing cache: the computed file↔game pairings are cached
+  persistently on-device (DataStore, `pairing_cache`). On app open
+  the cached pairings pre-populate the Library and "Has files"
+  immediately; in the background the app re-runs the matching when
+  the Recompa catalog, the Premiumize library, or a JSON remote
+  folder changes, and overwrites the cache with the new list (which
+  becomes the new default pre-populated cache). The background
+  refresh never blocks the UI or the pre-populated display, and a
+  partial refresh never wipes the cached pairings — the cache is
+  only overwritten once every source has settled. A cache-version
+  key (`PAIRING_CACHE_VERSION`) forces a re-compute when a matcher
+  rule changes, so a stale cache built under old rules can never
+  survive. The Premiumize download link is never cached (it is
+  re-fetched on demand). Local-only, never synced.
+
 ## v1.8.1 — 2026-11-16
 
 Platform consistency for file matching. A file whose name carries
