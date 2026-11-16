@@ -249,6 +249,36 @@ fun mapFork(fork: RecompaFork): PortFork {
     )
 }
 
+/**
+ * Fill in each port's [Port.distinctiveNameHints]: a hint is
+ * distinctive when it appears in exactly one port's hint set across
+ * the whole list and is at least 4 characters long. Franchise words
+ * ("pokémon" — "pok"/"mon" after tokenizing — shared by every
+ * Pokémon port) and common English words ("new", "men") are shared by
+ * several ports, so they can never be distinctive; a 3-letter hint
+ * ("men", "rts", "gt2") is too short to trust on its own. A port
+ * whose hints are all shared or too short keeps an empty list and
+ * matches nothing by name — safe failure, better than a false match.
+ * The catalog id slug is a hint too, so a port whose title words are
+ * all shared may keep only its id as distinctive — in practice that
+ * never appears in a real file name, so such a port effectively loses
+ * name matching and is assigned by hand instead.
+ */
+fun withDistinctiveHints(ports: List<Port>): List<Port> {
+    val owners = mutableMapOf<String, MutableSet<String>>()
+    for (port in ports) {
+        for (hint in port.fileNameHints.toSet()) {
+            owners.getOrPut(hint) { mutableSetOf() }.add(port.id)
+        }
+    }
+    return ports.map { port ->
+        val distinctive = port.fileNameHints
+            .filter { hint -> hint.length >= 4 && owners[hint]?.size == 1 }
+            .distinct()
+        port.copy(distinctiveNameHints = distinctive)
+    }
+}
+
 /** Result of merging the Recompa catalog into the curated catalog. */
 data class CatalogMerge(
     /** Curated ports first (canonical), then catalog-only ports. */
@@ -303,8 +333,11 @@ fun mergeCatalogs(curated: List<Port>, catalog: List<Port>): CatalogMerge {
     val withoutFileInfo = catalog
         .filter { it.fileExtensions.isEmpty() }
         .map { it.catalogId }
+    // Distinctive hints are computed over the whole merged list, so a
+    // hint shared by any two ports here can never drive a NAME_ONLY
+    // match for either of them.
     return CatalogMerge(
-        merged = merged,
+        merged = withDistinctiveHints(merged),
         unmatchedCuratedIds = unmatched,
         portsWithoutFileInfo = withoutFileInfo
     )

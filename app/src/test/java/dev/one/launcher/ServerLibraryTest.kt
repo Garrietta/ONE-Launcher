@@ -28,6 +28,7 @@ class ServerLibraryTest {
         packageNames = listOf("dev.nxnative.android.pokopia"),
         fileExtensions = emptyList(),
         fileNameHints = listOf("pokopia", "banananative-compilationfix"),
+        distinctiveNameHints = listOf("pokopia", "banananative-compilationfix"),
         requiredDump = "Your own Switch 2 game dump as a folder (with base/)."
     )
 

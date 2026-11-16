@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.5.0 — 2026-11-16
+
+Portside. ONE is renamed Portside (same app, same `com.garrietta.one`
+package — it upgrades in place over the v1.4.3 release build) and restyled
+to the dark, cinematic game-library look from the concept video: a fixed
+dark theme with a single lime accent, the Library as a shelf of cover-art
+spines with the selected game shown large (Play / Details), and a
+console/platform rail on the left when unfolded. The detail page keeps
+exactly the same content (install status, Premiumize / Local / Server file
+sections, releases, file matching), restyled. New icon: the locked
+container-yard photo, containers forming a P, scaled into the adaptive
+icon's safe zone over a dark yard tone sampled from the image. No new
+features in this round — no versions list, no tuning slider, no
+auto-benchmark (separate epic, later).
+
+- Name-only matching is tightened to distinctive hints: a file matches a
+  format-less port by name only when it contains a hint no other port in
+  the catalog shares, at least 4 characters long. The Pokopia .nup still
+  matches Pokopia only; the three v1.4.3 false positives are gone (Arceus
+  no longer shows the Pokopia .nup, ACNH no longer shows the "NEW upcoming
+  releases" .txt, Army Men no longer shows the X-Men '97 .mkv files).
+  458 of the 464 format-less ports keep at least one distinctive hint;
+  6 lose name matching entirely (carmageddon, gt2, p3p, p4g, unreal, zzt)
+  and are assigned by hand instead.
+- The remote-folder listing parser now validates that a fetched page is
+  actually a standard directory listing (Apache/nginx "Index of" heading,
+  Apache sort links, or an nginx `<pre>` listing) before extracting any
+  entries. A JS web app's HTML shell — nav/sidebar chrome — gets the plain
+  "Couldn't read this folder" error and zero entries instead of showing
+  HTML fragments as filenames. Standard listings and plain JSON file lists
+  parse exactly as before.
+
 ## v1.4.3 — 2026-11-16
 
 First release build (signed) — the repo is now private, and CI builds

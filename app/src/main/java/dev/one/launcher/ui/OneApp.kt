@@ -11,8 +11,10 @@ import android.widget.Toast
 import androidx.documentfile.provider.DocumentFile
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -20,8 +22,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -29,8 +33,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -92,6 +98,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -380,12 +387,23 @@ private fun LibraryScreen(
 
     if (unfolded) {
         Row(modifier = Modifier.fillMaxSize()) {
+            // Unfolded console rail: the platforms, vertical, like the
+            // concept's left rail. Folded, the same options are the one
+            // sideways-scrolling chip row inside PortList.
+            PlatformRail(
+                platformOptions = platformOptions,
+                selectedPlatform = platformFilter,
+                onPlatformChange = { platformFilter = it }
+            )
             PortList(
                 ports = filteredPorts,
                 statuses = statuses,
                 cloudFiles = cloudFiles,
                 selectedId = selectedId,
                 onSelect = onOpenDetail,
+                onOpenDetail = onOpenDetail,
+                onPlay = { viewModel.launchPort(it) },
+                unfolded = unfolded,
                 modifier = Modifier.weight(0.42f),
                 onRefresh = { viewModel.refreshCatalog() },
                 query = query,
@@ -419,7 +437,10 @@ private fun LibraryScreen(
             statuses = statuses,
             cloudFiles = cloudFiles,
             selectedId = selectedId,
-            onSelect = onOpenDetail,
+            onSelect = { viewModel.selectPort(it) },
+            onOpenDetail = onOpenDetail,
+            onPlay = { viewModel.launchPort(it) },
+            unfolded = unfolded,
             modifier = Modifier.fillMaxSize(),
             onRefresh = { viewModel.refreshCatalog() },
             query = query,
@@ -440,6 +461,9 @@ private fun PortList(
     cloudFiles: List<PremiumizeItem>,
     selectedId: String?,
     onSelect: (String) -> Unit,
+    onOpenDetail: (String) -> Unit,
+    onPlay: (String) -> Unit,
+    unfolded: Boolean,
     modifier: Modifier,
     onRefresh: () -> Unit,
     query: String,
@@ -449,13 +473,20 @@ private fun PortList(
     onPlatformChange: (String) -> Unit,
     catalogStatusText: String
 ) {
+    // The selected port: the ViewModel's selection when one is set, else
+    // the first port in the filtered list — so the shelf always has a
+    // hero (folded) or a detail pane (unfolded) to show.
+    val selectedPort = remember(ports, selectedId) {
+        selectedId?.let { id -> ports.firstOrNull { it.id == id } }
+            ?: ports.firstOrNull()
+    }
     Column(modifier = modifier) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "ONE",
+                text = "PORTSIDE",
                 style = MaterialTheme.typography.headlineMedium,
                 modifier = Modifier.weight(1f)
             )
@@ -471,10 +502,11 @@ private fun PortList(
             singleLine = true,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
         )
-        if (platformOptions.isNotEmpty()) {
+        if (!unfolded && platformOptions.isNotEmpty()) {
             // One horizontally scrolling row, not a wrapping grid: on the
             // folded screen the old FlowRow ran to ~6 rows and left room
-            // for about one port card below it.
+            // for about one port card below it. Unfolded, the platforms
+            // live in the console rail instead.
             Row(
                 modifier = Modifier.fillMaxWidth()
                     .horizontalScroll(rememberScrollState())
@@ -501,73 +533,240 @@ private fun PortList(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
         )
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
-            items(ports, key = { it.id }) { port ->
-                val status = statuses[port.id]
-                Card(
-                    onClick = { onSelect(port.id) },
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (port.id == selectedId) {
-                            MaterialTheme.colorScheme.secondaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.surfaceVariant
-                        }
+        Column(
+            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+        ) {
+            // The shelf: covers as a horizontal row of spines. Tapping a
+            // spine selects the port — folded it fills the hero below,
+            // unfolded it fills the detail pane.
+            LazyRow(
+                modifier = Modifier.fillMaxWidth().height(216.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(ports, key = { it.id }) { port ->
+                    val status = statuses[port.id]
+                    PortSpine(
+                        port = port,
+                        selected = port.id == selectedPort?.id,
+                        isInstalled = status?.isInstalled == true,
+                        onClick = { onSelect(port.id) }
                     )
-                ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (port.coverArtUrl.isNotBlank()) {
-                            AsyncImage(
-                                model = port.coverArtUrl,
-                                contentDescription = null,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .size(56.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(MaterialTheme.colorScheme.surface)
-                            )
-                            Spacer(modifier = Modifier.width(12.dp))
+                }
+            }
+            // Folded hero: the selected port large, with its title and
+            // actions. Unfolded, the detail pane plays this role.
+            if (!unfolded && selectedPort != null) {
+                val status = statuses[selectedPort.id]
+                val hasCloudFile = cloudFiles.any { item ->
+                    PortMatcher.matchKind(item.name, selectedPort) != null
+                }
+                Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                    if (selectedPort.coverArtUrl.isNotBlank()) {
+                        AsyncImage(
+                            model = selectedPort.coverArtUrl,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(220.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+                    Text(
+                        text = selectedPort.title,
+                        style = MaterialTheme.typography.headlineSmall
+                    )
+                    Text(
+                        text = selectedPort.game,
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "${selectedPort.system} · ${selectedPort.type}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        StatusChip(text = status?.statusText ?: "Not installed")
+                        FileBadge(status = status, hasCloudFile = hasCloudFile)
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (status?.isInstalled == true) {
+                            Button(onClick = { onPlay(selectedPort.id) }) {
+                                Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Play")
+                            }
                         }
-                        Column(modifier = Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = port.title,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                StatusChip(text = status?.statusText ?: "Not installed")
-                                val hasCloudFile = cloudFiles.any { item ->
-                                    PortMatcher.matchKind(item.name, port) != null
-                                }
-                                FileBadge(status = status, hasCloudFile = hasCloudFile)
-                            }
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(text = port.game, style = MaterialTheme.typography.bodyMedium)
-                            Text(
-                                text = "${port.system} · ${port.type}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            val fileName = status?.assignedFile?.name
-                                ?: status?.downloadedFileName
-                                ?: status?.detectedFile?.name
-                            if (fileName != null) {
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = "File: $fileName",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
+                        OutlinedButton(onClick = { onOpenDetail(selectedPort.id) }) {
+                            Text("Details")
                         }
                     }
                 }
             }
         }
+    }
+}
+
+/**
+ * One spine on the shelf: the port's cover art, portrait, with its
+ * title underneath. The selected spine carries a lime outline; an
+ * installed port carries a small lime play mark on the cover.
+ */
+@Composable
+private fun PortSpine(
+    port: Port,
+    selected: Boolean,
+    isInstalled: Boolean,
+    onClick: () -> Unit
+) {
+    Column(modifier = Modifier.width(112.dp)) {
+        Card(
+            onClick = onClick,
+            modifier = Modifier.size(width = 112.dp, height = 160.dp),
+            shape = RoundedCornerShape(8.dp),
+            border = if (selected) {
+                BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+            } else {
+                null
+            },
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                if (port.coverArtUrl.isNotBlank()) {
+                    AsyncImage(
+                        model = port.coverArtUrl,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = port.title.take(1),
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                if (isInstalled) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(6.dp)
+                            .size(24.dp)
+                            .background(
+                                Color.Black.copy(alpha = 0.6f),
+                                CircleShape
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Filled.PlayArrow,
+                            contentDescription = "Installed",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = port.title,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/**
+ * The unfolded console rail: the platforms as a vertical list, like
+ * the concept's left rail. The selected platform gets a lime bar and
+ * lime text. Folded, the same options are the sideways-scrolling
+ * chip row in PortList.
+ */
+@Composable
+private fun PlatformRail(
+    platformOptions: List<Pair<String, String>>,
+    selectedPlatform: String,
+    onPlatformChange: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxHeight()
+            .width(168.dp)
+            .padding(vertical = 8.dp)
+    ) {
+        Text(
+            text = "CONSOLES",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+        )
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            item {
+                PlatformRailRow(
+                    label = "All",
+                    selected = selectedPlatform.isEmpty(),
+                    onClick = { onPlatformChange("") }
+                )
+            }
+            items(platformOptions, key = { it.first }) { (id, name) ->
+                PlatformRailRow(
+                    label = name,
+                    selected = selectedPlatform == id,
+                    onClick = { onPlatformChange(id) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlatformRailRow(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .height(40.dp)
+                .background(
+                    if (selected) MaterialTheme.colorScheme.primary
+                    else Color.Transparent
+                )
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (selected) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+        )
     }
 }
 
@@ -736,7 +935,7 @@ private fun GameDetailContent(
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(160.dp)
+                    .height(220.dp)
                     .clip(RoundedCornerShape(12.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant)
             )
@@ -1219,7 +1418,7 @@ private fun GameDetailContent(
                 if (apkState?.blockedByUnknownSources == true) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Android blocked the install: ONE is not yet allowed " +
+                        text = "Android blocked the install: Portside is not yet allowed " +
                             "to install apps. Allow it in system settings, then " +
                             "tap Install again.",
                         style = MaterialTheme.typography.bodyMedium
@@ -1263,7 +1462,7 @@ private fun GameDetailContent(
         Spacer(modifier = Modifier.height(16.dp))
         Text(text = "Settings for this port", style = MaterialTheme.typography.titleMedium)
         Text(
-            text = "Stored on this device. ONE does not enforce settings inside the port app.",
+            text = "Stored on this device. Portside does not enforce settings inside the port app.",
             style = MaterialTheme.typography.bodySmall
         )
         Spacer(modifier = Modifier.height(8.dp))
@@ -1654,14 +1853,14 @@ private fun SettingsScreen(
         )
         Text(
             text = "Files you pull from your Premiumize cloud land here, " +
-                "in ONE's own Downloads folder.",
+                "in Portside's own Downloads folder.",
             style = MaterialTheme.typography.bodySmall
         )
         Spacer(modifier = Modifier.height(16.dp))
 
         Text(text = "Local game files folder", style = MaterialTheme.typography.titleMedium)
         Text(
-            text = "Like a ROMs folder in an emulator: ONE pre-searches this " +
+            text = "Like a ROMs folder in an emulator: Portside pre-searches this " +
                 "folder for files matching your ports and remembers what it " +
                 "found, so the Library badges show up even before you open " +
                 "a game's page.",
@@ -1778,14 +1977,14 @@ private fun SettingsScreen(
         Text(text = "Custom links", style = MaterialTheme.typography.titleMedium)
         Text(
             text = "Shortcuts to your own pages. Tapping one opens it in " +
-                "your browser — ONE never downloads from these links.",
+                "your browser — Portside never downloads from these links.",
             style = MaterialTheme.typography.bodySmall
         )
         Spacer(modifier = Modifier.height(8.dp))
         if (customLinks.isEmpty()) {
             Text(
                 text = "No custom links yet. Add shortcuts to your own pages — " +
-                    "for example, your own self-hosted file archive. ONE only " +
+                    "for example, your own self-hosted file archive. Portside only " +
                     "opens these in your browser; it never downloads from them.",
                 style = MaterialTheme.typography.bodyMedium
             )
@@ -1848,7 +2047,7 @@ private fun SettingsScreen(
 
         Text(text = "Remote folders", style = MaterialTheme.typography.titleMedium)
         Text(
-            text = "Your own file servers, browsed inside ONE. A folder " +
+            text = "Your own file servers, browsed inside Portside. A folder " +
                 "must be served as a standard directory listing or a " +
                 "simple file list (a JSON array of {name, url}). Files " +
                 "you download land in your local game-files folder when " +
@@ -1963,12 +2162,12 @@ private fun SettingsScreen(
 
         Spacer(modifier = Modifier.height(24.dp))
         Text(text = "About", style = MaterialTheme.typography.titleMedium)
-        Text(text = "ONE 1.4.2 (debug build)", style = MaterialTheme.typography.bodyMedium)
+        Text(text = "Portside 1.5.0 (release build)", style = MaterialTheme.typography.bodyMedium)
         Spacer(modifier = Modifier.height(8.dp))
         TextButton(onClick = { openUrl(context, "https://recompa.app") }) {
             Text(
                 text = "Catalog data: Recompa (recompa.app), GPL-3.0 — ports are " +
-                    "their authors' own projects; ONE lists them, it does " +
+                    "their authors' own projects; Portside lists them, it does " +
                     "not host them."
             )
         }
@@ -1979,7 +2178,7 @@ private fun SettingsScreen(
         )
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            text = "ONE is not affiliated with Nintendo, HarbourMasters, " +
+            text = "Portside is not affiliated with Nintendo, HarbourMasters, " +
                 "Premiumize, or any port author. The ports listed are the work " +
                 "of their own authors — see each project's repository. Only use " +
                 "game files you legally own and dumped yourself. Premiumize " +

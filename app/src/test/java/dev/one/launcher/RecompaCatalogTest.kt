@@ -10,6 +10,7 @@ import dev.one.launcher.data.hintsFromGameTitle
 import dev.one.launcher.data.mapCatalogPort
 import dev.one.launcher.data.mergeCatalogs
 import dev.one.launcher.data.parseRecompaIndex
+import dev.one.launcher.data.withDistinctiveHints
 import dev.one.launcher.model.Port
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -262,7 +263,13 @@ class RecompaCatalogTest {
     @Test
     fun portWithNoAssetsHasNoFileInfo() {
         val index = parseRecompaIndex(cannedIndex)!!
-        val port = mapCatalogPort(index.ports.first { it.id == "noassets" }, "Super Nintendo")
+        // Distinctive hints come from the merge, not the mapper alone:
+        // run the mapped port through withDistinctiveHints, as
+        // mergeCatalogs does. Its hints are "some" (from "Some Game")
+        // and "noassets" (its id) — both distinctive in this list.
+        val port = withDistinctiveHints(
+            listOf(mapCatalogPort(index.ports.first { it.id == "noassets" }, "Super Nintendo"))
+        ).single()
         assertTrue(port.fileExtensions.isEmpty())
         assertFalse(port.archiveOk)
         assertFalse(port.hasFileInfo)
@@ -307,7 +314,7 @@ class RecompaCatalogTest {
                 )
             )
         )
-        val port = mapCatalogPort(pokopiaIndex, "Switch 2")
+        val port = withDistinctiveHints(listOf(mapCatalogPort(pokopiaIndex, "Switch 2"))).single()
         assertTrue(port.fileExtensions.isEmpty())
         // There IS file info (a label and instructions) — just no formats.
         assertTrue(port.hasFileInfo)
@@ -387,6 +394,27 @@ class RecompaCatalogTest {
         assertEquals(listOf("zelda64recomp", "zelda3"), merge.unmatchedCuratedIds)
         // Ports without file info are reported.
         assertEquals(listOf("noassets"), merge.portsWithoutFileInfo)
+    }
+
+    @Test
+    fun distinctiveHintsNeedOneOwnerAndFourLetters() {
+        val a = Port(
+            id = "a", title = "A", game = "Shared Game", system = "PC",
+            type = "recomp", repo = "example/a", releasesUrl = "",
+            fileNameHints = listOf("shared", "alpha", "abc"),
+            requiredDump = "Your own files."
+        )
+        val b = Port(
+            id = "b", title = "B", game = "Shared Other", system = "PC",
+            type = "recomp", repo = "example/b", releasesUrl = "",
+            fileNameHints = listOf("shared", "beta"),
+            requiredDump = "Your own files."
+        )
+        val distinct = withDistinctiveHints(listOf(a, b))
+        // "shared" has two owners — distinctive for neither. "abc" is
+        // 3 letters — too short. Only the single-owner 4+ hints survive.
+        assertEquals(listOf("alpha"), distinct[0].distinctiveNameHints)
+        assertEquals(listOf("beta"), distinct[1].distinctiveNameHints)
     }
 
     @Test

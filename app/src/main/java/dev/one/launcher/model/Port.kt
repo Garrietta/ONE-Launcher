@@ -62,6 +62,16 @@ data class Port(
      */
     val fileInstructions: String = "",
     /**
+     * Hints that identify this port alone: hints appearing in exactly
+     * one port's hint set across the whole merged catalog, at least 4
+     * characters long. Only these may drive a NAME_ONLY match — a
+     * shared hint ("pokémon", "new", "men") must never match a file to
+     * the wrong port. Set by [dev.one.launcher.data.withDistinctiveHints]
+     * at merge time; empty for curated-only ports (they all have
+     * formats, so they never reach the NAME_ONLY branch).
+     */
+    val distinctiveNameHints: List<String> = emptyList(),
+    /**
      * True when the catalog provides any file info for this port
      * (assets[] present and non-empty). False only when there is truly
      * no asset info — the detail page says "File info not listed in the

@@ -3,9 +3,11 @@ package dev.one.launcher
 import dev.one.launcher.data.REMOTE_FOLDER_ERROR
 import dev.one.launcher.data.RemoteListingResult
 import dev.one.launcher.data.buildRemoteRequest
+import dev.one.launcher.data.looksLikeDirectoryListing
 import dev.one.launcher.data.normalizeRemoteFolderUrl
 import dev.one.launcher.data.parseDirectoryListing
 import dev.one.launcher.data.parsePlainFileList
+import dev.one.launcher.data.parseRemoteBody
 import okhttp3.Credentials
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -203,6 +205,66 @@ class RemoteDirectoryTest {
         assertNull(withoutAuth.header("Authorization"))
         val noUser = buildRemoteRequest("http://192.168.1.10/files/", "", "pass")
         assertNull(noUser.header("Authorization"))
+    }
+
+    // ---- Web-app shells are refused, never read as listings (v1.5.0) ----
+    //
+    // Garrett's own server is a JS web app, not a directory listing.
+    // Its sidebar/nav chrome used to be extracted as file entries —
+    // rows like "span:last-child]:truncate hover:bg-sidebar-accent
+    // hov..." and a File name dialog showing raw sidebar-button HTML.
+    // A page with none of the listing markers gets the plain error
+    // and zero entries instead.
+
+    private val reactAppShell = """
+        <!doctype html><html><head><title>My Server</title>
+        <link rel="stylesheet" href="/assets/index.css"></head><body>
+        <div id="root"><div class="flex h-screen w-full">
+        <aside class="hidden md:flex flex-col border-r bg-sidebar">
+        <nav><a href="/browse" class="flex items-center gap-2 px-3 py-2 text-sm hover:bg-sidebar-accent hover:text-sidebar-accent-foreground">Browse</a>
+        <a href="/games" class="flex items-center gap-2 px-3 py-2 text-sm hover:bg-sidebar-accent">Games</a>
+        <button class="group flex w-full items-center gap-2 rounded-md p-2 text-left text-sm outline-hidden transition-[width,height,padding] focus-visible:ring-2 [&>span:last-child]:truncate hover:bg-sidebar-accent hover:text-sidebar-accent-foreground h-8 text-sm" data-slot="sidebar-menu-button" data-sidebar="menu-button" data-size="default" data-active="false">About RVZ files</button>
+        </nav></aside>
+        <main><h2>Welcome to my server</h2><p>Pick a section from the sidebar.</p></main>
+        </div></div>
+        <script type="module" src="/assets/index.js"></script>
+        </body></html>
+    """.trimIndent()
+
+    @Test
+    fun webAppShellIsRefusedWithPlainError() {
+        assertFalse(looksLikeDirectoryListing(reactAppShell))
+        val result = parseRemoteBody("http://192.168.1.10/", reactAppShell)
+        assertTrue(result is RemoteListingResult.Error)
+        assertEquals(
+            REMOTE_FOLDER_ERROR,
+            (result as RemoteListingResult.Error).message
+        )
+    }
+
+    @Test
+    fun standardListingsStillPassValidation() {
+        assertTrue(looksLikeDirectoryListing(apacheListing))
+        assertTrue(looksLikeDirectoryListing(nginxListing))
+        val apache = parseRemoteBody("http://192.168.1.10/files/", apacheListing)
+        assertTrue(apache is RemoteListingResult.Listing)
+        assertEquals(3, (apache as RemoteListingResult.Listing).entries.size)
+        val nginx = parseRemoteBody("http://192.168.1.10/roms/", nginxListing)
+        assertTrue(nginx is RemoteListingResult.Listing)
+        assertEquals(2, (nginx as RemoteListingResult.Listing).entries.size)
+    }
+
+    @Test
+    fun plainJsonListStillPassesThroughParseRemoteBody() {
+        val result = parseRemoteBody(
+            "http://192.168.1.10/list.json",
+            """[{"name": "a.zip", "url": "http://192.168.1.10/a.zip"}]"""
+        )
+        assertTrue(result is RemoteListingResult.Listing)
+        assertEquals(
+            listOf("a.zip"),
+            (result as RemoteListingResult.Listing).entries.map { it.name }
+        )
     }
 
     @Test

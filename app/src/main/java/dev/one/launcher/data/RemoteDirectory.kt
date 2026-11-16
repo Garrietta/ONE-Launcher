@@ -129,11 +129,71 @@ private val LINK_REGEX = Regex(
 )
 
 /**
+ * True when a fetched HTML page looks like a standard directory
+ * listing (Apache mod_autoindex / nginx autoindex) rather than some
+ * other web page. The markers are the shapes a listing always has:
+ * a `<title>` or `<h1>` reading "Index of …" (Apache and nginx) or
+ * "Directory listing for …" (Python's http.server and friends), an
+ * Apache sort-header link (`?C=N;O=D`), or an nginx `<pre>` block of
+ * links. A JS web app's shell has none of these — its nav/sidebar
+ * chrome must never be read as file entries, so a page without a
+ * marker is refused before any link is extracted. Pure function —
+ * unit-tested.
+ */
+fun looksLikeDirectoryListing(html: String): Boolean {
+    if (LISTING_HEADING_REGEX.containsMatchIn(html)) return true
+    if (APACHE_SORT_REGEX.containsMatchIn(html)) return true
+    if (NGINX_PRE_REGEX.containsMatchIn(html)) return true
+    return false
+}
+
+private val LISTING_HEADING_REGEX = Regex(
+    """<(?:title|h1)[^>]*>[^<]*(?:index of|directory listing)""",
+    RegexOption.IGNORE_CASE
+)
+private val APACHE_SORT_REGEX = Regex(
+    """\?C=[NMSD];O=[AD]""",
+    RegexOption.IGNORE_CASE
+)
+private val NGINX_PRE_REGEX = Regex(
+    """<pre[^>]*>.*?<a\s+[^>]*href\s*=""",
+    setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+)
+
+/**
+ * Parse a fetched remote-folder body as a listing or a file list.
+ * JSON (leading `[` or `{`) goes to [parsePlainFileList]; anything
+ * else must first prove it is a directory listing
+ * ([looksLikeDirectoryListing]) before [parseDirectoryListing] runs —
+ * a web app's HTML shell is refused with the plain error and zero
+ * entries, never surfaced as filenames. Pure function — unit-tested.
+ */
+fun parseRemoteBody(url: String, body: String): RemoteListingResult {
+    val trimmed = body.trimStart()
+    if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+        return parsePlainFileList(url, body)
+    }
+    if (!looksLikeDirectoryListing(body)) {
+        return RemoteListingResult.Error(REMOTE_FOLDER_ERROR)
+    }
+    val entries = parseDirectoryListing(url, body)
+    return if (entries.isEmpty()) {
+        RemoteListingResult.Error(REMOTE_FOLDER_ERROR)
+    } else {
+        RemoteListingResult.Listing(entries)
+    }
+}
+
+/**
  * Parse an Apache mod_autoindex / nginx autoindex HTML listing into
  * folder and file entries. Skips sort-header links ("?C=N;O=D"),
  * parent-directory links ("../", "Parent Directory"), links off to
  * other hosts, and links with no usable name. Folders come first, then
  * files, each alphabetical. Pure function — unit-tested.
+ *
+ * NOTE: this extracts links from any HTML it is handed — callers must
+ * check [looksLikeDirectoryListing] (or use [parseRemoteBody]) first,
+ * so a web app's nav chrome is never read as a listing.
  */
 fun parseDirectoryListing(baseUrl: String, html: String): List<RemoteEntry> {
     val base = try {
@@ -261,17 +321,7 @@ class RemoteDirectoryApi(private val client: OkHttpClient = defaultClient()) {
                 }
                 val body = response.body?.string()
                     ?: return RemoteListingResult.Error(REMOTE_FOLDER_ERROR)
-                val trimmed = body.trimStart()
-                if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
-                    parsePlainFileList(url, body)
-                } else {
-                    val entries = parseDirectoryListing(url, body)
-                    if (entries.isEmpty()) {
-                        RemoteListingResult.Error(REMOTE_FOLDER_ERROR)
-                    } else {
-                        RemoteListingResult.Listing(entries)
-                    }
-                }
+                parseRemoteBody(url, body)
             }
         } catch (e: Exception) {
             RemoteListingResult.Error(REMOTE_FOLDER_ERROR)

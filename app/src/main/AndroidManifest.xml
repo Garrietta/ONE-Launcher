@@ -3,7 +3,7 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <!-- Lets ONE hand a downloaded release APK to the system installer.
+    <!-- Lets Portside hand a downloaded release APK to the system installer.
          The install itself always goes through the system prompt. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
@@ -23,9 +23,9 @@
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
-        android:label="ONE"
+        android:label="Portside"
         android:supportsRtl="true"
-        android:theme="@style/Theme.ONE"
+        android:theme="@style/Theme.Portside"
         android:usesCleartextTraffic="false">
         <!-- Fully qualified on purpose: the Kotlin class lives in
              package dev.one.launcher, while the namespace/applicationId is
@@ -36,14 +36,14 @@
         <activity
             android:name="dev.one.launcher.MainActivity"
             android:exported="true"
-            android:theme="@style/Theme.ONE">
+            android:theme="@style/Theme.Portside">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
         <!-- Shares a downloaded release APK with the system installer only.
-             The FileProvider path is ONE's own Downloads/ONE folder. -->
+             The FileProvider path is Portside's own Downloads/ONE folder. -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="com.garrietta.one.fileprovider"

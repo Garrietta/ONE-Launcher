@@ -2,6 +2,7 @@ package dev.one.launcher
 
 import dev.one.launcher.data.MatchKind
 import dev.one.launcher.data.PortMatcher
+import dev.one.launcher.data.withDistinctiveHints
 import dev.one.launcher.model.Port
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -144,6 +145,9 @@ class PortMatcherTest {
         packageNames = listOf("dev.nxnative.android.pokopia"),
         fileExtensions = emptyList(),
         fileNameHints = listOf("pokopia", "banananative-compilationfix"),
+        // Both hints are distinctive in the real catalog: no other
+        // port's hint set contains either.
+        distinctiveNameHints = listOf("pokopia", "banananative-compilationfix"),
         requiredDump = "Your Switch 2 game dump as a folder (with base/)."
     )
 
@@ -158,6 +162,10 @@ class PortMatcherTest {
         packageNames = emptyList(),
         fileExtensions = emptyList(),
         fileNameHints = listOf("donkey", "kong", "bananza", "donkey-kong-bananza"),
+        // In the real catalog "donkey" and "kong" are shared with other
+        // Donkey Kong ports, so only "bananza" and the id slug are
+        // distinctive — set exactly that, as withDistinctiveHints does.
+        distinctiveNameHints = listOf("bananza", "donkey-kong-bananza"),
         requiredDump = "Your own Donkey Kong Bananza game dump."
     )
 
@@ -196,6 +204,158 @@ class PortMatcherTest {
                 listOf(bananza)
             ).isEmpty()
         )
+    }
+
+    // ---- Distinctive-hint NAME_ONLY matching (v1.5.0) ----
+    //
+    // A name-only match now needs a DISTINCTIVE hint: one that appears
+    // in exactly one port's hint set across the catalog and is at least
+    // 4 characters long. The three cases below are Garrett's v1.4.3
+    // device report — each file matched the wrong port on a single
+    // shared hint ("pokémon", "new", "men") and must match nothing now.
+
+    private val arceus = Port(
+        id = "arceus-native",
+        title = "Pokémon Legends: Arceus",
+        game = "Pokémon Legends: Arceus",
+        system = "Switch 2",
+        type = "Recompilation",
+        repo = "example/arceus",
+        releasesUrl = "https://github.com/example/arceus/releases",
+        packageNames = emptyList(),
+        fileExtensions = emptyList(),
+        // Hints exactly as hintsFromGameTitle produces: "pok" and "mon"
+        // are the tokenized "pokémon", shared by every Pokémon port.
+        fileNameHints = listOf("pok", "mon", "legends", "arceus", "arceus-native"),
+        requiredDump = "Your own Arceus game dump."
+    )
+
+    private val acnh = Port(
+        id = "acnh-recomp",
+        title = "Animal Crossing: New Horizons",
+        game = "Animal Crossing: New Horizons",
+        system = "Switch 2",
+        type = "Recompilation",
+        repo = "example/acnh",
+        releasesUrl = "https://github.com/example/acnh/releases",
+        packageNames = emptyList(),
+        fileExtensions = emptyList(),
+        fileNameHints = listOf("animal", "crossing", "new", "horizons", "acnh-recomp"),
+        requiredDump = "Your own New Horizons game dump."
+    )
+
+    private val armyMen = Port(
+        id = "army-men-rts-android-evolved",
+        title = "Army Men RTS Evolved",
+        game = "Army Men RTS Evolved",
+        system = "Android",
+        type = "Recompilation",
+        repo = "example/armymen",
+        releasesUrl = "https://github.com/example/armymen/releases",
+        packageNames = emptyList(),
+        fileExtensions = emptyList(),
+        // "men" (3 letters) and "rts" (3 letters) are too short to be
+        // distinctive, whatever they share with.
+        fileNameHints = listOf("army", "men", "rts", "evolved", "army-men-rts-android-evolved"),
+        requiredDump = "Your own Army Men files."
+    )
+
+    private val raymanLegends = Port(
+        id = "rayman-legends",
+        title = "Rayman Legends",
+        game = "Rayman Legends",
+        system = "Switch 2",
+        type = "Recompilation",
+        repo = "example/rayman",
+        releasesUrl = "https://github.com/example/rayman/releases",
+        packageNames = emptyList(),
+        fileExtensions = emptyList(),
+        fileNameHints = listOf("rayman", "legends", "rayman-legends"),
+        requiredDump = "Your own Rayman Legends game dump."
+    )
+
+    // A second port sharing "new", so it is not distinctive for ACNH.
+    private val newSuperMarioBrosU = Port(
+        id = "new-super-mario-bros-u",
+        title = "New Super Mario Bros. U",
+        game = "New Super Mario Bros. U",
+        system = "Wii U",
+        type = "Recompilation",
+        repo = "example/nsmbu",
+        releasesUrl = "https://github.com/example/nsmbu/releases",
+        packageNames = emptyList(),
+        fileExtensions = emptyList(),
+        fileNameHints = listOf("new", "mario", "bros", "u", "new-super-mario-bros-u"),
+        requiredDump = "Your own New Super Mario Bros. U game dump."
+    )
+
+    @Test
+    fun pokopiaNupNoLongerMatchesArceus() {
+        // Rayman Legends is in the list so "legends" is shared, as in
+        // the real catalog — otherwise it would be distinctive here
+        // and the test would prove nothing about shared hints.
+        val ports = withDistinctiveHints(listOf(arceus, pokopia, raymanLegends))
+        val arceusDistinctive = ports.first { it.id == "arceus-native" }
+        // "pok"/"mon" are shared (and 3 letters); "legends" is shared
+        // with Rayman Legends — none of them may match. Only "arceus"
+        // itself is distinctive.
+        assertEquals(
+            listOf("arceus", "arceus-native"),
+            arceusDistinctive.distinctiveNameHints
+        )
+        val kinds = PortMatcher.matchKinds(
+            "Pokémon Pokopia [0400A3A01EE4C000][v655360].nup", ports
+        )
+        assertEquals(1, kinds.size)
+        assertEquals("banananative-compilationfix", kinds.single().port.id)
+        assertEquals(MatchKind.NAME_ONLY, kinds.single().kind)
+    }
+
+    @Test
+    fun newReleasesTxtNoLongerMatchesAcnh() {
+        val ports = withDistinctiveHints(listOf(acnh, newSuperMarioBrosU))
+        // "new" is shared by both ports, so it is distinctive for
+        // neither — the .txt matches nothing at all.
+        assertFalse(
+            ports.first { it.id == "acnh-recomp" }
+                .distinctiveNameHints.contains("new")
+        )
+        assertTrue(
+            PortMatcher.matchKinds(
+                "NEW upcoming releases by Xclusive.txt", ports
+            ).isEmpty()
+        )
+    }
+
+    @Test
+    fun xMenMkvsNoLongerMatchArmyMen() {
+        val ports = withDistinctiveHints(listOf(armyMen))
+        // "men" is 3 letters: too short to be distinctive even though
+        // no other port in this list shares it.
+        assertFalse(
+            ports.single().distinctiveNameHints.contains("men")
+        )
+        listOf(
+            "X-Men '97 S01E01.mkv",
+            "X-Men '97 (2024) S01E02.mkv",
+            "X-Men 97 - S01E03.mkv"
+        ).forEach { file ->
+            assertTrue(
+                "expected no match for $file",
+                PortMatcher.matchKinds(file, ports).isEmpty()
+            )
+        }
+    }
+
+    @Test
+    fun sharedHintDoesNotMatchButDistinctiveHintDoes() {
+        val ports = withDistinctiveHints(listOf(arceus, raymanLegends))
+        // "legends" is shared by Arceus and Rayman Legends, so it
+        // matches neither; "rayman" is Rayman Legends' alone.
+        val kinds = PortMatcher.matchKinds("Rayman Legends.zip", ports)
+        assertEquals(1, kinds.size)
+        assertEquals("rayman-legends", kinds.single().port.id)
+        assertEquals(MatchKind.NAME_ONLY, kinds.single().kind)
     }
 
     @Test

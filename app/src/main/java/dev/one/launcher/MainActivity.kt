@@ -12,14 +12,14 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.one.launcher.ui.OneApp
 import dev.one.launcher.ui.OneViewModel
 import dev.one.launcher.ui.OneViewModelFactory
-import dev.one.launcher.ui.theme.OneTheme
+import dev.one.launcher.ui.theme.PortsideTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            OneTheme {
+            PortsideTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
