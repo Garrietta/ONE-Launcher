@@ -39,6 +39,7 @@ GitHub release update manager on each port's detail page.
   if installs from unknown sources are not yet allowed, the page explains
   and opens the system settings screen. Nothing installs silently, and
   nothing auto-downloads on page open.
+- Custom links in Settings (your own shortcuts, stored only on this device).
 - Known limits: no update check on the Library list yet (detail page
   only); archive confirmation needs the zip on the device — a zip still
   only in the cloud is a provisional name match.

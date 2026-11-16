@@ -1022,12 +1022,18 @@ private fun CloudItemRow(
 
 // ---- Settings ----
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsScreen(viewModel: OneViewModel) {
+    val context = LocalContext.current
     val account by viewModel.pmAccount.collectAsState()
     val statuses by viewModel.portStatuses.collectAsState()
     val assignedFiles by viewModel.assignedFiles.collectAsState()
+    val customLinks by viewModel.customLinks.collectAsState()
+    val customLinkError by viewModel.customLinkError.collectAsState()
     var message by remember { mutableStateOf<String?>(null) }
+    var linkName by remember { mutableStateOf("") }
+    var linkUrl by remember { mutableStateOf("") }
 
     Column(
         modifier = Modifier
@@ -1112,6 +1118,77 @@ private fun SettingsScreen(viewModel: OneViewModel) {
         if (message != null) {
             Spacer(modifier = Modifier.height(8.dp))
             Text(text = message!!, style = MaterialTheme.typography.bodySmall)
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text(text = "Custom links", style = MaterialTheme.typography.titleMedium)
+        Text(
+            text = "Shortcuts to your own pages. Tapping one opens it in " +
+                "your browser — ONE never downloads from these links.",
+            style = MaterialTheme.typography.bodySmall
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        if (customLinks.isEmpty()) {
+            Text(
+                text = "No custom links yet. Add shortcuts to your own pages — " +
+                    "for example, your own self-hosted file archive. ONE only " +
+                    "opens these in your browser; it never downloads from them.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        } else {
+            customLinks.forEach { link ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        TextButton(onClick = { openUrl(context, link.url) }) {
+                            Text(link.name)
+                        }
+                        Text(
+                            text = Uri.parse(link.url).host ?: link.url,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = { viewModel.removeCustomLink(link) }) {
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = "Delete ${link.name}"
+                        )
+                    }
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedTextField(
+            value = linkName,
+            onValueChange = { linkName = it },
+            label = { Text("Name") },
+            placeholder = { Text("My archive") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedTextField(
+            value = linkUrl,
+            onValueChange = { linkUrl = it },
+            label = { Text("URL") },
+            placeholder = { Text("https://example.com") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Button(
+            onClick = {
+                if (viewModel.addCustomLink(linkName, linkUrl)) {
+                    linkName = ""
+                    linkUrl = ""
+                }
+            }
+        ) {
+            Text("Add link")
+        }
+        if (customLinkError != null) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(text = customLinkError!!, color = MaterialTheme.colorScheme.error)
         }
 
         Spacer(modifier = Modifier.height(24.dp))

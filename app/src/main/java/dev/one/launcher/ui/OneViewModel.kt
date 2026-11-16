@@ -9,6 +9,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import dev.one.launcher.data.CustomLink
+import dev.one.launcher.data.CustomLinksStore
 import dev.one.launcher.data.DownloadRepository
 import dev.one.launcher.data.DownloadState
 import dev.one.launcher.data.GitHubAsset
@@ -29,6 +31,7 @@ import dev.one.launcher.data.PremiumizeResult
 import dev.one.launcher.data.ReleaseResult
 import dev.one.launcher.data.SecureKeyStore
 import dev.one.launcher.data.compareVersions
+import dev.one.launcher.data.normalizeCustomLinkUrl
 import dev.one.launcher.data.pickApkAsset
 import dev.one.launcher.model.Port
 import dev.one.launcher.model.PortCatalog
@@ -99,6 +102,7 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     private val matchedStore = MatchedFilesStore(application)
     private val downloadRepo = DownloadRepository(application)
     private val releasesApi = GitHubReleasesApi()
+    private val customLinksStore = CustomLinksStore(application)
 
     // StateFlows must be declared before init: init calls refreshLibrary(),
     // and Kotlin initializes properties and init blocks in declaration order,
@@ -170,6 +174,14 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     private val _extractMessage = MutableStateFlow<Map<String, String>>(emptyMap())
     val extractMessage: StateFlow<Map<String, String>> = _extractMessage.asStateFlow()
 
+    /** User-entered custom links (Settings), stored only on this device. */
+    private val _customLinks = MutableStateFlow<List<CustomLink>>(emptyList())
+    val customLinks: StateFlow<List<CustomLink>> = _customLinks.asStateFlow()
+
+    /** Validation error from adding a custom link, if any. */
+    private val _customLinkError = MutableStateFlow<String?>(null)
+    val customLinkError: StateFlow<String?> = _customLinkError.asStateFlow()
+
     /** (folder id, display name), root first. */
     private val folderStack = mutableListOf<Pair<String?, String>>(null to "My cloud")
 
@@ -191,6 +203,10 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
         catalogNote = catalog.catalogNote
         ports = catalog.ports
         refreshLibrary()
+        // Keep the on-device custom links in state.
+        viewModelScope.launch {
+            customLinksStore.links.collect { _customLinks.value = it }
+        }
         // Restore a saved Premiumize session, if the user linked one before.
         if (secureKeyStore.getApiKey() != null) {
             viewModelScope.launch { restoreSession() }
@@ -641,6 +657,38 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
 
     fun dismissDownloadError() {
         _downloadError.value = null
+    }
+
+    // ---- Custom links (Settings; browser-only shortcuts) ----
+
+    /**
+     * Add a user-entered shortcut. Returns true when it was accepted.
+     * The link is stored on this device only; tapping it later just opens
+     * it in the external browser — ONE never downloads from it.
+     */
+    fun addCustomLink(name: String, rawUrl: String): Boolean {
+        val cleanName = name.trim()
+        if (cleanName.isEmpty()) {
+            _customLinkError.value = "Give the link a name first."
+            return false
+        }
+        val url = normalizeCustomLinkUrl(rawUrl)
+        if (url == null) {
+            _customLinkError.value =
+                "That URL does not look right. Use an http:// or https:// link."
+            return false
+        }
+        _customLinkError.value = null
+        viewModelScope.launch { customLinksStore.add(CustomLink(cleanName, url)) }
+        return true
+    }
+
+    fun removeCustomLink(link: CustomLink) {
+        viewModelScope.launch { customLinksStore.remove(link) }
+    }
+
+    fun dismissCustomLinkError() {
+        _customLinkError.value = null
     }
 
     fun downloadsDirPath(): String = downloadRepo.downloadsDir().absolutePath
