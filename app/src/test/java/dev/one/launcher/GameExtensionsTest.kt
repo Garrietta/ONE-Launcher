@@ -198,6 +198,44 @@ class GameExtensionsTest {
     }
 
     @Test
+    fun remoteBrowserFilterKeepsMagnetEntries() {
+        // Magnet entries are copyable links, not files — they pass
+        // the display filter even though they are not game files,
+        // including one whose name ends in a game extension (.zip).
+        // A non-game file is still hidden.
+        val magnetUri =
+            "magnet:?xt=urn:btih:9c6e87aaca8a26f4755d44079d5575b1732428f6" +
+                "&dn=Acorn%20-%20Archimedes"
+        val entries = listOf(
+            RemoteEntry(
+                "Acorn - Archimedes", magnetUri, false, kind = "magnet"
+            ),
+            RemoteEntry(
+                "Redump/Microsoft - Xbox 360/007 - Blood Stone (Japan).zip",
+                magnetUri, false, kind = "magnet"
+            ),
+            // Scheme fallback: a magnet: URL with no kind at all.
+            RemoteEntry("No-Intro System", magnetUri, false),
+            RemoteEntry("Ocarina of Time.z64", "https://example.com/oot.z64", false),
+            RemoteEntry("readme.txt", "https://example.com/readme.txt", false)
+        )
+        val shown = filterRemoteEntriesToGameFiles(entries)
+        assertEquals(
+            listOf(
+                "Acorn - Archimedes",
+                "No-Intro System",
+                "Ocarina of Time.z64",
+                "Redump/Microsoft - Xbox 360/007 - Blood Stone (Japan).zip"
+            ),
+            shown.map { it.name }.sorted()
+        )
+        assertTrue(isGameFileRemoteEntry(entries[0]))
+        assertTrue(isGameFileRemoteEntry(entries[1]))
+        assertTrue(isGameFileRemoteEntry(entries[2]))
+        assertFalse(isGameFileRemoteEntry(entries[4]))
+    }
+
+    @Test
     fun liveRemoteJsonFiltersTo73GameFiles() {
         // Snapshot of the live remote.json (Garrett's Pages file) as
         // of 2026-11-16: 376 entries. The browser shows only the 73

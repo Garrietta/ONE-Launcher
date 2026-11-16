@@ -553,6 +553,57 @@ class GameLibraryTest {
         assertEquals(1, keys.size)
     }
 
+    @Test
+    fun magnetEntriesNeverCountAsGameFiles() {
+        // A magnet entry is a copyable link, not a file: it must not
+        // count toward "Has files", even when its name is a game
+        // file's name with a game extension (.zip). The server source
+        // here holds only magnets, so no game has files.
+        val magnetUri =
+            "magnet:?xt=urn:btih:9c6e87aaca8a26f4755d44079d5575b1732428f6" +
+                "&dn=Acorn%20-%20Archimedes"
+        val games = groupPortsByGame(listOf(eidos, pokopia, arceus))
+        val keys = gamesWithFiles(
+            games = games,
+            cloudItems = emptyList(),
+            cloudFallback = emptyMap(),
+            serverSources = listOf(
+                "json" to listOf(
+                    RemoteEntry(
+                        name = "Pokemon Black (NDS) (USA)",
+                        url = magnetUri,
+                        isFolder = false,
+                        kind = "magnet"
+                    ),
+                    RemoteEntry(
+                        name = "Pokémon Pokopia [0400A3A01EE4C000][v655360].nup",
+                        url = magnetUri,
+                        isFolder = false,
+                        kind = "magnet"
+                    )
+                )
+            ),
+            detected = emptyMap(),
+            localStates = emptyMap()
+        )
+        assertTrue(keys.isEmpty())
+        // And they never appear in a game's "Your files" either.
+        val server = matchServerFilesForGame(
+            listOf(
+                "json" to listOf(
+                    RemoteEntry(
+                        name = "Pokemon Black (NDS) (USA)",
+                        url = magnetUri,
+                        isFolder = false,
+                        kind = "magnet"
+                    )
+                )
+            ),
+            listOf(eidos)
+        )
+        assertTrue(server.isEmpty())
+    }
+
     // ---- Game-file gate (v1.6.1) ----
     //
     // Garrett's v1.6.0 device report: two movie files matched to

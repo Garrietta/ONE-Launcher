@@ -1,5 +1,51 @@
 # Changelog
 
+## v1.8.0 — 2026-11-16
+
+Magnet links, from Minerva. A remote folder's JSON can now carry
+magnet entries (kind "magnet", a full magnet: URI in `url`), and the
+app shows them in the remote folder browser with a Magnet chip; tap
+one and the link is copied to the clipboard ("Link copied") — it
+never opens in the browser and never downloads. Magnet entries are
+never game files: they never match a port, never appear in a game's
+"Your files", and never count toward "Has files". The remote folder
+browser shows game files AND magnet entries (folders kept). The
+combined adapter (json-adapter.py) keeps the r-roms direct-link
+crawl exactly as-is and adds a Minerva magnet crawl: it scrapes the
+Minerva browse page at ADAPTER_MINERVA_URL (a folder page gives one
+magnet per system, a system page one per game; the root browse page
+recurses one level into its Redump and No-Intro subfolders), rebuilds
+each entry's magnet with the real name as dn plus the three trackers,
+and emits one record per entry ({name, url: full magnet URI, kind:
+"magnet", category, size?}) into the same combined bare JSON array.
+A collection split across several torrents (IBM - PC compatible)
+becomes one record per torrent, named "<name> (part N of M)". The
+CDN .torrent approach is dead — cdn.minerva-archive.org/torrents/
+404s — so there is no bencodepy and no .torrent decoding; the
+adapter stays standard-library only. Upgrades in place over the
+v1.7.0 release build (same signature).
+
+- App (RemoteDirectory): the remote-folder JSON parser reads an
+  optional "kind" on each entry ("magnet"/"file", absent means
+  "file") and treats any magnet: URL as a magnet entry (scheme
+  fallback); a magnet: URI is used as-is, never resolved against
+  the feed URL.
+- App (browser): a magnet entry shows a Magnet chip instead of an
+  extension chip and a "Copy link" button (clipboard + "Link
+  copied" toast, "Link unavailable" when there is nothing to
+  copy); no Download button for magnets.
+- App (matching): the v1.6.1 gate excludes a magnet: URL before
+  checking name/extension, and the remote call sites skip
+  entry.isMagnet — a magnet entry whose name ends in .zip still
+  matches nothing, in any source.
+- App (display filter): isGameFileRemoteEntry keeps folders, game
+  files, and magnet entries.
+- Adapter (json-adapter.py): new Minerva browse-page scraper
+  (--minerva, or ADAPTER_MINERVA_URL); the r-roms crawl, dedup,
+  and sorting are unchanged.
+- Workflow (adapter.yml): ADAPTER_MINERVA_URL is passed through
+  as --minerva when set; without it the run is r-roms only.
+
 ## v1.7.0 — 2026-11-16
 
 Garrett's two narrated videos on the v1.6.1 Library layout, plus one

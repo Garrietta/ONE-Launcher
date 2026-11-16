@@ -144,6 +144,13 @@ object PortMatcher {
         port: Port,
         fileUrl: String? = null
     ): Boolean {
+        // A magnet link is never a game file, whatever its name ends
+        // in: a magnet entry's name is a file path (often ".zip"),
+        // so the extension check below would pass it. The gate
+        // excludes magnets before any name/extension check. (The
+        // remote call sites also skip entry.isMagnet outright — see
+        // matchRemoteEntries and matchServerFilesForGame.)
+        if (fileUrl != null && isMagnetUrl(fileUrl)) return false
         val exts = listOfNotNull(
             extensionOf(fileName),
             fileUrl?.let { extensionOf(it) }
@@ -303,7 +310,7 @@ object PortMatcher {
         entries: List<RemoteEntry>,
         port: Port
     ): List<Pair<RemoteEntry, MatchKind>> =
-        entries.filter { !it.isFolder }.mapNotNull { entry ->
+        entries.filter { !it.isFolder && !it.isMagnet }.mapNotNull { entry ->
             matchKind(entry.name, port, entry.url)?.let { entry to it }
         }
 

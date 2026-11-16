@@ -179,6 +179,9 @@ fun matchServerFilesForGame(
     for ((sourceName, entries) in sources) {
         for (entry in entries) {
             if (entry.isFolder) continue
+            // Magnet entries are copyable links, not files — they
+            // never match a game and never appear in "Your files".
+            if (entry.isMagnet) continue
             val match = ports.firstNotNullOfOrNull { port ->
                 PortMatcher.matchKind(entry.name, port, entry.url)?.let { port to it }
             } ?: continue
@@ -359,6 +362,7 @@ fun gamesWithFiles(
     for ((_, entries) in serverSources) {
         for (entry in entries) {
             if (entry.isFolder) continue
+            if (entry.isMagnet) continue
             for (match in PortMatcher.matchKinds(entry.name, ports, entry.url)) {
                 matchedPorts.add(match.port.id)
             }

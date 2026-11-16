@@ -52,6 +52,24 @@ class PortMatcherTest {
     }
 
     @Test
+    fun magnetUrlNeverMatchesEvenWithGameExtension() {
+        // The matching gate excludes a magnet: URL before checking
+        // name or extension: a magnet entry whose name ends in a
+        // game extension (.zip) must not match, or it would appear
+        // as a game file.
+        val magnetUri =
+            "magnet:?xt=urn:btih:9c6e87aaca8a26f4755d44079d5575b1732428f6" +
+                "&dn=Acorn%20-%20Archimedes"
+        assertNull(
+            PortMatcher.matchKind(
+                "Legend of Zelda, The - Ocarina of Time (USA).zip",
+                oot, magnetUri
+            )
+        )
+        assertFalse(PortMatcher.matches("OcarinaOfTime.z64", oot, magnetUri))
+    }
+
+    @Test
     fun matchingPortsFindsCandidate() {
         val ports = listOf(oot)
         assertTrue(PortMatcher.matchingPorts("zelootd.z64", ports).size == 1)

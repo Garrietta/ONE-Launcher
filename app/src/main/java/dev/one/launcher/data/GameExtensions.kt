@@ -156,14 +156,16 @@ fun isGameFile(
 
 /**
  * True when a remote-folder entry belongs in the browser: folders are
- * always kept (they are navigation), and a file is kept only when it
- * is a game file — the union of all platforms' extensions plus
- * archives, from its name or URL. A Redump/TOSEC index, a collection
- * page, or a firmware link has no game extension in either place and
- * is hidden.
+ * always kept (they are navigation), magnet entries are always kept
+ * (they are copyable links, not files — the v1.6.1 game-file rule
+ * does not apply to them), and a file is kept only when it is a game
+ * file — the union of all platforms' extensions plus archives, from
+ * its name or URL. A Redump/TOSEC index, a collection page, or a
+ * firmware link has no game extension in either place and is hidden.
  */
 fun isGameFileRemoteEntry(entry: RemoteEntry): Boolean =
-    entry.isFolder || isGameFile(entry.name, platformId = null, fileUrl = entry.url)
+    entry.isFolder || entry.isMagnet ||
+        isGameFile(entry.name, platformId = null, fileUrl = entry.url)
 
 /** Keep only the entries the remote folder browser shows. */
 fun filterRemoteEntriesToGameFiles(entries: List<RemoteEntry>): List<RemoteEntry> =

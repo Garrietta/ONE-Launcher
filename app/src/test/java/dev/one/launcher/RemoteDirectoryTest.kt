@@ -3,7 +3,9 @@ package dev.one.launcher
 import dev.one.launcher.data.REMOTE_FOLDER_ERROR
 import dev.one.launcher.data.RemoteListingResult
 import dev.one.launcher.data.buildRemoteRequest
+import dev.one.launcher.data.isMagnetUrl
 import dev.one.launcher.data.looksLikeDirectoryListing
+import dev.one.launcher.data.magnetLinkToCopy
 import dev.one.launcher.data.normalizeRemoteFolderUrl
 import dev.one.launcher.data.parseDirectoryListing
 import dev.one.launcher.data.parsePlainFileList
@@ -146,6 +148,89 @@ class RemoteDirectoryTest {
         assertTrue(result is RemoteListingResult.Listing)
         val entries = (result as RemoteListingResult.Listing).entries
         assertEquals(listOf("good.zip"), entries.map { it.name })
+    }
+
+    // ---- Magnet entries (v1.8.0) ----
+
+    private val magnetUri =
+        "magnet:?xt=urn:btih:9c6e87aaca8a26f4755d44079d5575b1732428f6" +
+            "&dn=Acorn%20-%20Archimedes" +
+            "&tr=udp://tracker.opentrackr.org:1337/announce" +
+            "&tr=udp://open.stealth.si:80/announce" +
+            "&tr=udp://tracker.torrent.eu.org:451/announce"
+
+    @Test
+    fun magnetEntryDetectedByKind() {
+        val feed = """
+            [
+              {"name": "Acorn - Archimedes", "url": "$magnetUri", "kind": "magnet", "category": "Redump", "size": 22774064087},
+              {"name": "game.zip", "url": "http://192.168.1.10/game.zip", "kind": "file"},
+              {"name": "plain.zip", "url": "http://192.168.1.10/plain.zip"}
+            ]
+        """.trimIndent()
+        val result = parsePlainFileList("http://192.168.1.10/list.json", feed)
+        assertTrue(result is RemoteListingResult.Listing)
+        val entries = (result as RemoteListingResult.Listing).entries
+        assertEquals(3, entries.size)
+        // The magnet entry is detected, and its magnet: URI is used
+        // as-is — never resolved against the feed URL.
+        assertTrue(entries[0].isMagnet)
+        assertEquals(magnetUri, entries[0].url)
+        assertEquals(22774064087L, entries[0].sizeBytes)
+        // A file entry, and one with no kind at all, are not magnets.
+        assertFalse(entries[1].isMagnet)
+        assertFalse(entries[2].isMagnet)
+    }
+
+    @Test
+    fun magnetUrlWithoutKindIsStillDetected() {
+        // The scheme fallback: a magnet: URL is a magnet entry even
+        // when "kind" is missing.
+        val feed = """
+            [
+              {"name": "Acorn - Archimedes", "url": "$magnetUri"}
+            ]
+        """.trimIndent()
+        val result = parsePlainFileList("http://192.168.1.10/list.json", feed)
+        assertTrue(result is RemoteListingResult.Listing)
+        val entries = (result as RemoteListingResult.Listing).entries
+        assertEquals(1, entries.size)
+        assertTrue(entries[0].isMagnet)
+        assertTrue(isMagnetUrl(entries[0].url))
+        assertEquals(magnetUri, magnetLinkToCopy(entries[0]))
+    }
+
+    @Test
+    fun magnetLinkToCopyReturnsFullMagnetOrNull() {
+        val feed = """
+            [
+              {"name": "Acorn - Archimedes", "url": "$magnetUri", "kind": "magnet"},
+              {"name": "game.zip", "url": "http://192.168.1.10/game.zip"}
+            ]
+        """.trimIndent()
+        val result = parsePlainFileList("http://192.168.1.10/list.json", feed)
+        val entries = (result as RemoteListingResult.Listing).entries
+        // The magnet entry copies its full magnet URI.
+        assertEquals(magnetUri, magnetLinkToCopy(entries[0]))
+        // A file entry has nothing to copy.
+        assertNull(magnetLinkToCopy(entries[1]))
+    }
+
+    @Test
+    fun magnetEntryWithZipNameIsStillAMagnet() {
+        // A magnet entry's name is a file path that may end in a
+        // game extension (e.g. ".zip"). It must still be a magnet —
+        // the matching gate relies on isMagnet, not on the name.
+        val feed = """
+            [
+              {"name": "Redump/Microsoft - Xbox 360/007 - Blood Stone (Japan).zip", "url": "$magnetUri", "kind": "magnet"}
+            ]
+        """.trimIndent()
+        val result = parsePlainFileList("http://192.168.1.10/list.json", feed)
+        val entries = (result as RemoteListingResult.Listing).entries
+        assertEquals(1, entries.size)
+        assertTrue(entries[0].isMagnet)
+        assertEquals(magnetUri, entries[0].url)
     }
 
     @Test

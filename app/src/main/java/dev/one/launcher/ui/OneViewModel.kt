@@ -1608,13 +1608,14 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Fetch one remote folder for the browser screen. Only game files
-     * are shown (v1.6.1, [filterRemoteEntriesToGameFiles]): a folder
-     * full of collection indexes, Redump/TOSEC lists, or firmware
-     * links shows as an empty folder, not as a wall of files that are
-     * not games. Folders themselves are always kept — they are
-     * navigation. The filter is display only: the Server library
-     * matching still runs on the full listing through the matcher
-     * gate, so nothing that could match is lost here.
+     * and magnet entries are shown (v1.6.1, [filterRemoteEntriesToGameFiles]):
+     * a folder full of collection indexes, Redump/TOSEC lists, or
+     * firmware links shows as an empty folder, not as a wall of files
+     * that are not games. Folders themselves are always kept — they are
+     * navigation — and magnet entries are always kept, because they are
+     * copyable links, not files. The filter is display only: the Server
+     * library matching still runs on the full listing through the
+     * matcher gate, so nothing that could match is lost here.
      */
     private fun fetchRemoteUrl(url: String) {
         val source = remoteSource ?: return
@@ -1649,6 +1650,10 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     fun downloadRemoteFile(entry: RemoteEntry) {
         val source = remoteSource ?: return
         if (entry.isFolder) return
+        // A magnet entry is a copyable link, not a file: it is never
+        // downloaded. The browser row offers "Copy link" for it, so
+        // this is only a guard against a stray call.
+        if (entry.isMagnet) return
         val fileName = entry.name.substringAfterLast('/').substringAfterLast('\\').trim()
         if (fileName.isEmpty() || fileName == "." || fileName == "..") {
             _remoteDownloadError.value = "That file name cannot be saved on this device."

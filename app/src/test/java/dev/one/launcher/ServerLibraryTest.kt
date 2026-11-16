@@ -52,6 +52,13 @@ class ServerLibraryTest {
     private fun folder(name: String, url: String = "http://localhost/$name/") =
         RemoteEntry(name = name, url = url, isFolder = true)
 
+    private fun magnet(name: String, url: String) =
+        RemoteEntry(name = name, url = url, isFolder = false, kind = "magnet")
+
+    private val magnetUri =
+        "magnet:?xt=urn:btih:9c6e87aaca8a26f4755d44079d5575b1732428f6" +
+            "&dn=Acorn%20-%20Archimedes"
+
     @Test
     fun pokopiaNupMatchesNameOnly() {
         val entries = listOf(
@@ -80,6 +87,23 @@ class ServerLibraryTest {
         // file: the section lists files the user can open, not folders.
         val entries = listOf(folder("Pokémon Pokopia [NUP]"))
         assertTrue(PortMatcher.matchRemoteEntries(entries, pokopia).isEmpty())
+    }
+
+    @Test
+    fun magnetEntriesNeverMatchAnyPort() {
+        // A magnet entry is a copyable link, not a file: it must
+        // never appear in the Server library, even when its name
+        // ends in a game extension (.zip) or names a port outright.
+        // This covers both the isMagnet skip in matchRemoteEntries
+        // and the magnet: exclusion in the matching gate.
+        val entries = listOf(
+            magnet("Acorn - Archimedes", magnetUri),
+            magnet("Redump/Microsoft - Xbox 360/007 - Blood Stone (Japan).zip", magnetUri),
+            magnet("Pokémon Pokopia [0400A3A01EE4C000][v655360].nup", magnetUri),
+            magnet("Legend of Zelda, The - Ocarina of Time (USA).zip", magnetUri)
+        )
+        assertTrue(PortMatcher.matchRemoteEntries(entries, pokopia).isEmpty())
+        assertTrue(PortMatcher.matchRemoteEntries(entries, oot).isEmpty())
     }
 
     @Test

@@ -10,6 +10,12 @@
 #   2. Set the ADAPTER_BASE_URL repository variable to your site's root
 #      URL (Settings > Secrets and variables > Actions > Variables).
 #      Example: https://your-mirror.example.com  (or http://host:port)
+#      Optionally set ADAPTER_MINERVA_URL to a Minerva browse URL
+#      (e.g. https://minerva-archive.org/browse/Redump/) to also add
+#      that page's magnet entries (kind "magnet") to the same JSON.
+#      The root browse URL (https://minerva-archive.org/browse/)
+#      recurses one level into its Redump and No-Intro subfolders.
+#      If ADAPTER_MINERVA_URL is unset, the output is r-roms only.
 #   3. Enable GitHub Pages with "GitHub Actions" as the source
 #      (Settings > Pages).
 #   4. Run it once by hand (Actions > Remote JSON adapter > Run workflow)
@@ -57,13 +63,21 @@ jobs:
       - name: Run the adapter
         env:
           ADAPTER_BASE_URL: ${{ vars.ADAPTER_BASE_URL }}
+          ADAPTER_MINERVA_URL: ${{ vars.ADAPTER_MINERVA_URL }}
         run: |
           if [ -z "$ADAPTER_BASE_URL" ]; then
             echo "ADAPTER_BASE_URL is not set. Set it as a repository variable (Settings > Secrets and variables > Actions > Variables)." >&2
             exit 1
           fi
           mkdir -p pages
-          python3 json-adapter.py --base-url "$ADAPTER_BASE_URL" --output pages/remote.json
+          # --minerva is passed only when ADAPTER_MINERVA_URL is set;
+          # without it the adapter is r-roms only. No extra packages
+          # are needed: the adapter is standard-library only.
+          ARGS=(--base-url "$ADAPTER_BASE_URL" --output pages/remote.json)
+          if [ -n "$ADAPTER_MINERVA_URL" ]; then
+            ARGS+=(--minerva "$ADAPTER_MINERVA_URL")
+          fi
+          python3 json-adapter.py "${ARGS[@]}"
           ls -la pages/remote.json
 
       - name: Upload Pages artifact

@@ -16,7 +16,8 @@ import java.util.concurrent.TimeUnit
  *
  *  - Standard HTTP directory listings (Apache mod_autoindex / nginx
  *    autoindex HTML): links to subfolders and files.
- *  - A plain JSON file list: an array of objects with `name` and `url`.
+ *  - A plain JSON file list: an array of objects with `name` and `url`
+ *    (an entry may also carry `kind` "magnet" for a magnet link).
  *
  * It deliberately does NOT understand catalog feeds: no hierarchical
  * categories/pages/sections/rows JSON, no flat items[] schema with
@@ -33,13 +34,45 @@ import java.util.concurrent.TimeUnit
  * `size` field); standard directory listings do not provide one
  * through this parser, so it stays null there and the browser simply
  * shows no size.
+ *
+ * Magnet entries (v1.8.0): a remote JSON list may carry magnet links
+ * (kind "magnet"). A magnet entry is a copyable link, not a file:
+ * tapping it copies the magnet URI (its `url`, a full magnet: URI),
+ * it never downloads and never matches a game. `kind` is null for
+ * autoindex entries and for plain file entries that do not carry it.
  */
 data class RemoteEntry(
     val name: String,
     val url: String,
     val isFolder: Boolean,
-    val sizeBytes: Long? = null
-)
+    val sizeBytes: Long? = null,
+    val kind: String? = null
+) {
+    /**
+     * True for a magnet entry: the JSON said kind "magnet", or the
+     * URL itself is a magnet: URI (the fallback, so a magnet entry
+     * works even when "kind" is missing). A magnet entry is never a
+     * game file, whatever its name ends in.
+     */
+    val isMagnet: Boolean
+        get() = kind.equals("magnet", ignoreCase = true) ||
+            isMagnetUrl(url)
+}
+
+/** True when a URL is a magnet: URI (ignoring surrounding space). */
+fun isMagnetUrl(url: String): Boolean =
+    url.trim().startsWith("magnet:", ignoreCase = true)
+
+/**
+ * The magnet URI to copy for a magnet entry, or null when it is not
+ * a magnet entry. A magnet entry's `url` is its full magnet URI, so
+ * this is just that URL. Pure — unit-tested; the clipboard write
+ * itself is UI and is not JVM-testable.
+ */
+fun magnetLinkToCopy(entry: RemoteEntry): String? {
+    if (!entry.isMagnet) return null
+    return entry.url.takeIf { it.isNotBlank() }
+}
 
 sealed class RemoteListingResult {
     data class Listing(val entries: List<RemoteEntry>) : RemoteListingResult()
@@ -247,13 +280,19 @@ fun parseDirectoryListing(baseUrl: String, html: String): List<RemoteEntry> {
 
 /**
  * Parse a plain JSON file list: an array of objects with `name` and
- * `url` (both required strings). Unknown fields are ignored; an entry
- * missing either field is skipped, never crashed on. Anything that is
- * not such an array — a JSON object (e.g. a categories[] catalog), a
+ * `url` (both required strings). An entry may also carry an optional
+ * `kind` ("magnet" or "file"; absent means "file") and an optional
+ * numeric `size`. Unknown fields are ignored; an entry missing a
+ * required field is skipped, never crashed on. Anything that is not
+ * such an array — a JSON object (e.g. a categories[] catalog), a
  * malformed document, or an array whose entries carry no usable
  * name/url (e.g. the flat items[] schema with title/downloadUrl) — is
  * rejected with the plain error, not interpreted as a file list. Pure
  * function — unit-tested.
+ *
+ * Magnet entries (v1.8.0): a magnet entry's `url` is its full
+ * magnet: URI, used as-is (it is already absolute — it is never
+ * resolved against the feed URL).
  */
 fun parsePlainFileList(feedUrl: String, rawJson: String): RemoteListingResult {
     val json = Json { ignoreUnknownKeys = true }
@@ -279,7 +318,16 @@ fun parsePlainFileList(feedUrl: String, rawJson: String): RemoteListingResult {
             null
         }
         if (name == null || url == null) return@mapNotNull null
-        val resolved = resolveUrl(feedUrl, url) ?: return@mapNotNull null
+        // A magnet: URI is already absolute — use it as-is. Anything
+        // else resolves against the feed URL.
+        val resolved = if (isMagnetUrl(url)) url
+        else resolveUrl(feedUrl, url) ?: return@mapNotNull null
+        val kindPrimitive = item["kind"] as? JsonPrimitive
+        val kind = if (kindPrimitive?.isString == true) {
+            kindPrimitive.content.takeIf { it.isNotBlank() }?.trim()
+        } else {
+            null
+        }
         // Optional numeric size, when the list carries one; anything
         // else (missing, a string, a negative) means "unknown".
         // JsonPrimitive has no longOrNull in kotlinx-serialization
@@ -291,7 +339,10 @@ fun parsePlainFileList(feedUrl: String, rawJson: String): RemoteListingResult {
         } else {
             null
         }
-        RemoteEntry(name = name, url = resolved, isFolder = false, sizeBytes = size)
+        RemoteEntry(
+            name = name, url = resolved, isFolder = false,
+            sizeBytes = size, kind = kind
+        )
     }
     if (entries.isEmpty()) return RemoteListingResult.Error(REMOTE_FOLDER_ERROR)
     return RemoteListingResult.Listing(entries.sortedBy { it.name.lowercase() })

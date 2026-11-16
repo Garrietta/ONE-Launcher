@@ -50,6 +50,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
@@ -133,6 +134,7 @@ import dev.one.launcher.data.RemoteEntry
 import dev.one.launcher.data.RemoteFolderSource
 import dev.one.launcher.data.dedupeGameFiles
 import dev.one.launcher.data.formatRemoteTitle
+import dev.one.launcher.data.magnetLinkToCopy
 import dev.one.launcher.data.matchCloudFilesForGame
 import dev.one.launcher.data.matchLocalFilesForGame
 import dev.one.launcher.data.matchServerFilesForGame
@@ -3148,6 +3150,7 @@ private fun RemoteBrowserRow(
 ) {
     // The displayed title is formatted; the download, the folder
     // navigation, and everything else still use entry.name verbatim.
+    val context = LocalContext.current
     val formatted = formatRemoteTitle(entry.name, entry.isFolder, format)
     Card(
         modifier = Modifier
@@ -3175,7 +3178,23 @@ private fun RemoteBrowserRow(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
-                if (formatted.extension != null) {
+                if (entry.isMagnet) {
+                    // A magnet entry is a copyable link, not a file:
+                    // it gets a Magnet chip instead of an extension
+                    // chip, so it is visibly different from a
+                    // downloadable file.
+                    Surface(
+                        color = MaterialTheme.colorScheme.tertiaryContainer,
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = "Magnet",
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                } else if (formatted.extension != null) {
                     Surface(
                         color = MaterialTheme.colorScheme.tertiaryContainer,
                         shape = RoundedCornerShape(8.dp)
@@ -3204,29 +3223,62 @@ private fun RemoteBrowserRow(
             }
             if (!entry.isFolder) {
                 Spacer(modifier = Modifier.height(8.dp))
-                when {
-                    savedTo != null -> {
-                        Text(
-                            text = savedTo,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                if (entry.isMagnet) {
+                    // A magnet entry is a copyable link, not a file:
+                    // tapping it copies the magnet URI to the
+                    // clipboard. It never opens in the browser and
+                    // never downloads. (The clipboard write itself
+                    // is UI and is not JVM-testable; the link the
+                    // button copies is magnetLinkToCopy, pure and
+                    // unit-tested.)
+                    OutlinedButton(onClick = {
+                        val link = magnetLinkToCopy(entry)
+                        if (link != null) {
+                            val clipboard = context.getSystemService(
+                                Context.CLIPBOARD_SERVICE
+                            ) as ClipboardManager
+                            clipboard.setPrimaryClip(
+                                ClipData.newPlainText("Magnet link", link)
+                            )
+                            Toast.makeText(
+                                context, "Link copied", Toast.LENGTH_SHORT
+                            ).show()
+                        } else {
+                            Toast.makeText(
+                                context, "Link unavailable",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }) {
+                        Icon(Icons.Filled.ContentCopy, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Copy link")
                     }
-                    progress != null -> {
-                        LinearProgressIndicator(
-                            progress = { progress },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Text(
-                            text = "Downloading… ${(progress * 100).toInt()}%",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                    else -> {
-                        OutlinedButton(onClick = onDownload) {
-                            Icon(Icons.Filled.Download, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Download to this device")
+                } else {
+                    when {
+                        savedTo != null -> {
+                            Text(
+                                text = savedTo,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        progress != null -> {
+                            LinearProgressIndicator(
+                                progress = { progress },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Text(
+                                text = "Downloading… ${(progress * 100).toInt()}%",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        else -> {
+                            OutlinedButton(onClick = onDownload) {
+                                Icon(Icons.Filled.Download, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Download to this device")
+                            }
                         }
                     }
                 }
