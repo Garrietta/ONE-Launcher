@@ -51,6 +51,9 @@ object PortMatcher {
     }
 
     fun matches(fileName: String, port: Port): Boolean {
+        // No file info (e.g. a catalog port whose assets[] is missing):
+        // matching is disabled rather than guessed.
+        if (port.fileExtensions.isEmpty()) return false
         val lower = fileName.lowercase()
         val extensionOk = port.fileExtensions.any { lower.endsWith(it.lowercase()) }
         if (!extensionOk) return false
@@ -77,6 +80,9 @@ object PortMatcher {
     fun matchKind(fileName: String, port: Port): MatchKind? {
         if (matches(fileName, port)) return MatchKind.DIRECT
         if (!isArchive(fileName)) return null
+        // Archives only match by name when the catalog says the port's
+        // files may come in an archive (zip_ok), or for curated ports.
+        if (!port.archiveOk) return null
         val baseName = fileName.substringBeforeLast('.', fileName)
         if (nameHitsHints(baseName, port)) return MatchKind.ARCHIVE_PROVISIONAL
         return null

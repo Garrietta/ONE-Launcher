@@ -8,6 +8,7 @@ import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +25,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -74,7 +76,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -86,6 +90,8 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
+import coil.compose.AsyncImage
+import dev.one.launcher.data.CatalogState
 import dev.one.launcher.data.MatchKind
 import dev.one.launcher.data.PortMatcher
 import dev.one.launcher.data.PortSettings
@@ -266,22 +272,60 @@ private fun LibraryScreen(
     val statuses by viewModel.portStatuses.collectAsState()
     val selectedId by viewModel.selectedPortId.collectAsState()
     val cloudFiles by viewModel.cloudAllFiles.collectAsState()
+    val ports by viewModel.portsFlow.collectAsState()
+    val catalogState by viewModel.catalogState.collectAsState()
+    val catalogPlatforms by viewModel.catalogPlatforms.collectAsState()
+
+    // Search + platform filter: the catalog is 500+ ports now, so the
+    // Library filters by title/game name and by original platform.
+    var query by remember { mutableStateOf("") }
+    var platformFilter by remember { mutableStateOf("") } // "" = All
+    val platformOptions = remember(ports, catalogPlatforms) {
+        val present = ports.map { it.platformId }.toSet()
+        catalogPlatforms
+            .filter { it.id in present }
+            .map { it.id to it.name }
+            .sortedBy { it.second }
+    }
+    val filteredPorts = remember(ports, query, platformFilter) {
+        ports.filter { port ->
+            (platformFilter.isEmpty() || port.platformId == platformFilter) &&
+                (query.isBlank() ||
+                    port.title.contains(query, ignoreCase = true) ||
+                    port.game.contains(query, ignoreCase = true))
+        }
+    }
+    val catalogStatusText = when (val state = catalogState) {
+        CatalogState.Loading -> "Loading the Recompa catalog…"
+        is CatalogState.Ready -> {
+            val date = state.generatedAt.take(10)
+            val cached = if (state.fromCache) " (cached)" else ""
+            "${state.portCount} ports · Recompa catalog, updated $date$cached"
+        }
+        is CatalogState.Unavailable -> state.message
+    }
 
     LaunchedEffect(Unit) { viewModel.refreshLibrary() }
 
     if (unfolded) {
         Row(modifier = Modifier.fillMaxSize()) {
             PortList(
-                ports = viewModel.ports,
+                ports = filteredPorts,
                 statuses = statuses,
                 cloudFiles = cloudFiles,
                 selectedId = selectedId,
                 onSelect = onOpenDetail,
                 modifier = Modifier.weight(0.42f),
-                onRefresh = { viewModel.refreshLibrary() }
+                onRefresh = { viewModel.refreshCatalog() },
+                query = query,
+                onQueryChange = { query = it },
+                platformOptions = platformOptions,
+                selectedPlatform = platformFilter,
+                onPlatformChange = { platformFilter = it },
+                catalogStatusText = catalogStatusText
             )
             val selected = selectedId?.let { viewModel.portById(it) }
-                ?: viewModel.ports.firstOrNull()
+                ?: filteredPorts.firstOrNull()
             if (selected != null) {
                 GameDetailContent(
                     viewModel = viewModel,
@@ -300,18 +344,24 @@ private fun LibraryScreen(
         }
     } else {
         PortList(
-            ports = viewModel.ports,
+            ports = filteredPorts,
             statuses = statuses,
             cloudFiles = cloudFiles,
             selectedId = selectedId,
             onSelect = onOpenDetail,
             modifier = Modifier.fillMaxSize(),
-            onRefresh = { viewModel.refreshLibrary() }
+            onRefresh = { viewModel.refreshCatalog() },
+            query = query,
+            onQueryChange = { query = it },
+            platformOptions = platformOptions,
+            selectedPlatform = platformFilter,
+            onPlatformChange = { platformFilter = it },
+            catalogStatusText = catalogStatusText
         )
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun PortList(
     ports: List<Port>,
@@ -320,7 +370,13 @@ private fun PortList(
     selectedId: String?,
     onSelect: (String) -> Unit,
     modifier: Modifier,
-    onRefresh: () -> Unit
+    onRefresh: () -> Unit,
+    query: String,
+    onQueryChange: (String) -> Unit,
+    platformOptions: List<Pair<String, String>>,
+    selectedPlatform: String,
+    onPlatformChange: (String) -> Unit,
+    catalogStatusText: String
 ) {
     Column(modifier = modifier) {
         Row(
@@ -333,9 +389,43 @@ private fun PortList(
                 modifier = Modifier.weight(1f)
             )
             IconButton(onClick = onRefresh) {
-                Icon(Icons.Filled.Refresh, contentDescription = "Refresh library")
+                Icon(Icons.Filled.Refresh, contentDescription = "Refresh library and catalog")
             }
         }
+        OutlinedTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            label = { Text("Search ports") },
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+        )
+        if (platformOptions.isNotEmpty()) {
+            FlowRow(
+                modifier = Modifier.fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = selectedPlatform.isEmpty(),
+                    onClick = { onPlatformChange("") },
+                    label = { Text("All") }
+                )
+                platformOptions.forEach { (id, name) ->
+                    FilterChip(
+                        selected = selectedPlatform == id,
+                        onClick = { onPlatformChange(id) },
+                        label = { Text(name) }
+                    )
+                }
+            }
+        }
+        Text(
+            text = catalogStatusText,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+        )
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             items(ports, key = { it.id }) { port ->
                 val status = statuses[port.id]
@@ -350,37 +440,54 @@ private fun PortList(
                         }
                     )
                 ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = port.title,
-                                style = MaterialTheme.typography.titleMedium,
-                                modifier = Modifier.weight(1f)
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (port.coverArtUrl.isNotBlank()) {
+                            AsyncImage(
+                                model = port.coverArtUrl,
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(56.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.surface)
                             )
-                            StatusChip(text = status?.statusText ?: "Not installed")
-                            val hasCloudFile = cloudFiles.any { item ->
-                                PortMatcher.matchKind(item.name, port) != null
-                            }
-                            FileBadge(status = status, hasCloudFile = hasCloudFile)
+                            Spacer(modifier = Modifier.width(12.dp))
                         }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(text = port.game, style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            text = "${port.system} · ${port.type}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        val fileName = status?.assignedFile?.name
-                            ?: status?.downloadedFileName
-                            ?: status?.detectedFile?.name
-                        if (fileName != null) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = port.title,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                StatusChip(text = status?.statusText ?: "Not installed")
+                                val hasCloudFile = cloudFiles.any { item ->
+                                    PortMatcher.matchKind(item.name, port) != null
+                                }
+                                FileBadge(status = status, hasCloudFile = hasCloudFile)
+                            }
                             Spacer(modifier = Modifier.height(4.dp))
+                            Text(text = port.game, style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                text = "File: $fileName",
+                                text = "${port.system} · ${port.type}",
                                 style = MaterialTheme.typography.bodySmall,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            val fileName = status?.assignedFile?.name
+                                ?: status?.downloadedFileName
+                                ?: status?.detectedFile?.name
+                            if (fileName != null) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "File: $fileName",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
                     }
                 }
@@ -487,6 +594,9 @@ private fun GameDetailContent(
     val localFolderUnavailable by viewModel.localFolderUnavailable.collectAsState()
     val copyMessages by viewModel.copyMessage.collectAsState()
     val confirmedArchives by viewModel.confirmedArchives.collectAsState()
+    val allPorts by viewModel.portsFlow.collectAsState()
+    val selectedForks by viewModel.selectedForks.collectAsState()
+    val selectedFork = remember(port, selectedForks) { viewModel.selectedFork(port) }
 
     // Cloud files matching this port: the flat listAll cache first, the
     // per-port search fallback when listAll failed for this port.
@@ -528,6 +638,19 @@ private fun GameDetailContent(
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
+        if (port.coverArtUrl.isNotBlank()) {
+            AsyncImage(
+                model = port.coverArtUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(160.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+        }
         Text(text = port.title, style = MaterialTheme.typography.headlineSmall)
         Text(text = port.game, style = MaterialTheme.typography.titleMedium)
         Spacer(modifier = Modifier.height(4.dp))
@@ -536,6 +659,10 @@ private fun GameDetailContent(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        if (port.description.isNotBlank()) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(text = port.description, style = MaterialTheme.typography.bodyMedium)
+        }
         Spacer(modifier = Modifier.height(12.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             StatusChip(text = status?.statusText ?: "Not installed")
@@ -566,15 +693,22 @@ private fun GameDetailContent(
         }
         Text(text = port.requiredDump, style = MaterialTheme.typography.bodyMedium)
         Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = "Accepted: ${port.fileExtensions.joinToString(", ")}; " +
-                "archives .zip, .7z, .rar are matched by name",
-            style = MaterialTheme.typography.bodySmall
-        )
-        Text(
-            text = "Filename hints: ${port.fileNameHints.joinToString(", ")}",
-            style = MaterialTheme.typography.bodySmall
-        )
+        if (port.fileExtensions.isEmpty()) {
+            Text(
+                text = "File info not listed in the catalog.",
+                style = MaterialTheme.typography.bodySmall
+            )
+        } else {
+            Text(
+                text = "Accepted: ${port.fileExtensions.joinToString(", ")}; " +
+                    "archives .zip, .7z, .rar are matched by name",
+                style = MaterialTheme.typography.bodySmall
+            )
+            Text(
+                text = "Filename hints: ${port.fileNameHints.joinToString(", ")}",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
 
         // ---- Premiumize: cloud files matching this port ----
         Spacer(modifier = Modifier.height(12.dp))
@@ -758,7 +892,7 @@ private fun GameDetailContent(
         OutlinedButton(onClick = { pickFile.launch(arrayOf("*/*")) }) {
             Text("Browse…")
         }
-        val pickedMatches = pickedName?.let { PortMatcher.matchingPorts(it, viewModel.ports) }
+        val pickedMatches = pickedName?.let { PortMatcher.matchingPorts(it, allPorts) }
             .orEmpty()
             .filter { it.id != port.id }
         if (pickedMatches.isNotEmpty()) {
@@ -818,6 +952,37 @@ private fun GameDetailContent(
         // Latest release, fetched when this page opens (metadata only).
         Spacer(modifier = Modifier.height(16.dp))
         Text(text = "Latest release", style = MaterialTheme.typography.titleMedium)
+        if (port.forks.size > 1) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(text = "Fork", style = MaterialTheme.typography.labelMedium)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                port.forks.forEach { fork ->
+                    FilterChip(
+                        selected = selectedFork?.repo == fork.repo,
+                        onClick = { viewModel.selectFork(port.id, fork.repo) },
+                        label = {
+                            Text(
+                                fork.displayName +
+                                    fork.latestTag.takeIf { it.isNotBlank() }
+                                        ?.let { " · $it" }.orEmpty()
+                            )
+                        }
+                    )
+                }
+            }
+            if (selectedFork != null) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Fork: ${selectedFork.repo}" +
+                        selectedFork.packageName
+                            ?.let { " · $it" }.orEmpty() +
+                        selectedFork.verified
+                            ?.let { if (it) " · verified in catalog" else "" }.orEmpty(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
         when (val release = releaseState) {
             null, ReleaseState.Loading -> {
                 Spacer(modifier = Modifier.height(4.dp))
@@ -880,6 +1045,14 @@ private fun GameDetailContent(
                         style = MaterialTheme.typography.bodySmall
                     )
                 } else if (apkState?.downloadedFile != null && release.apk != null) {
+                    if (apkState.shaVerified) {
+                        Text(
+                            text = "SHA-256 verified against the catalog.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                    }
                     Button(onClick = { viewModel.installApk(port.id) }) {
                         Text("Install ${release.apk.name}")
                     }
@@ -1006,6 +1179,7 @@ private fun CloudScreen(
     val downloadProgress by viewModel.downloadProgress.collectAsState()
     val downloadError by viewModel.downloadError.collectAsState()
     val confirmedArchives by viewModel.confirmedArchives.collectAsState()
+    val ports by viewModel.portsFlow.collectAsState()
 
     var apiKey by remember { mutableStateOf("") }
     var searchQuery by remember { mutableStateOf("") }
@@ -1152,7 +1326,7 @@ private fun CloudScreen(
             items(shown, key = { it.id + it.name }) { item ->
                 CloudItemRow(
                     item = item,
-                    ports = viewModel.ports,
+                    ports = ports,
                     progress = downloadProgress[item.id],
                     confirmedArchives = confirmedArchives,
                     onOpenFolder = { viewModel.openFolder(item) },
@@ -1274,6 +1448,7 @@ private fun SettingsScreen(viewModel: OneViewModel) {
     val localFolderUnavailable by viewModel.localFolderUnavailable.collectAsState()
     val customLinks by viewModel.customLinks.collectAsState()
     val customLinkError by viewModel.customLinkError.collectAsState()
+    val ports by viewModel.portsFlow.collectAsState()
     var message by remember { mutableStateOf<String?>(null) }
     var linkName by remember { mutableStateOf("") }
     var linkUrl by remember { mutableStateOf("") }
@@ -1354,7 +1529,7 @@ private fun SettingsScreen(viewModel: OneViewModel) {
         Spacer(modifier = Modifier.height(16.dp))
 
         Text(text = "Matched files", style = MaterialTheme.typography.titleMedium)
-        val matchedRows = viewModel.ports.mapNotNull { port ->
+        val matchedRows = ports.mapNotNull { port ->
             val status = statuses[port.id]
             val name = assignedFiles[port.id]?.name ?: status?.downloadedFileName
             if (name == null) null else port to name
@@ -1495,7 +1670,15 @@ private fun SettingsScreen(viewModel: OneViewModel) {
 
         Spacer(modifier = Modifier.height(24.dp))
         Text(text = "About", style = MaterialTheme.typography.titleMedium)
-        Text(text = "ONE 1.2.0 (debug build)", style = MaterialTheme.typography.bodyMedium)
+        Text(text = "ONE 1.3.0 (debug build)", style = MaterialTheme.typography.bodyMedium)
+        Spacer(modifier = Modifier.height(8.dp))
+        TextButton(onClick = { openUrl(context, "https://recompa.app") }) {
+            Text(
+                text = "Catalog data: Recompa (recompa.app), GPL-3.0 — ports are " +
+                    "their authors' own projects; ONE lists them, it does " +
+                    "not host them."
+            )
+        }
         Spacer(modifier = Modifier.height(8.dp))
         Text(
             text = viewModel.catalogNote,

@@ -1,5 +1,68 @@
 # Changelog
 
+## v1.3.0 — 2026-11-16
+
+The Library now lists the full Recompa catalog (500+ ports) instead of
+only the 5 curated ports, with search, a platform filter, a fork picker,
+catalog-powered releases, and SHA-256 verification of downloaded APKs.
+
+- Recompa catalog: ONE fetches https://recompa.app/index.json (the same
+  database the free, open-source Recompa launcher pulls), parses it with
+  `ignoreUnknownKeys`, and refuses to use it when `schema_version` is
+  anything other than 1 — a schema change falls back to the curated
+  ports.json with a plain note, never a crash. The raw JSON is cached in
+  the app cache dir; the cached index serves the Library immediately on
+  a cold start and a background refresh replaces it
+  (stale-while-revalidate), plus a manual refresh from the Library
+  refresh button. On fetch failure with no cache, the Library shows the
+  curated ports and says "Recompa catalog unavailable — showing your
+  curated ports."
+- Merge: the curated 5 stay canonical. A catalog port matching a curated
+  port (overlapping fork repo first, else an explicit id map for
+  soh/2ship2harkinian/starship — never fuzzy name matching) keeps the
+  curated title, notes and packageNames and gains the catalog's fork
+  list, latest-release data and cover art. Catalog ports with no curated
+  match are appended. Curated ports with no catalog match are reported
+  (Zelda 64: Recompiled and Zelda3 have none) rather than guessed.
+  A catalog port whose `assets[]` is missing gets no file extensions:
+  file matching is disabled for it and the detail page says "File info
+  not listed in the catalog" instead of inventing extensions. File
+  matching derives from the catalog `assets[]`: extensions from each
+  accepted format plus `convert_from`, archives match by name only when
+  `zip_ok` is true, filename hints from the game title tokens.
+- Library: search field (filters by port title / game name) and a
+  platform filter (chips built from the catalog `platforms` list, "All"
+  default). Folded single-column / unfolded two-pane layout and the
+  v1.2 file badges are unchanged. Library cards show the catalog cover
+  art via Coil when present, with a plain placeholder otherwise; the
+  list never blocks on image loading. The Library header shows the
+  catalog size and its `generated_at` date (or the unavailable note).
+- Detail page: ports with more than one fork show a fork selector (repo
+  name + latest tag per fork); the selected fork drives the "Latest
+  release" block. Release data comes from the catalog (tag + asset URL +
+  size + SHA-256) in preference to the v1.1 GitHub `releases/latest`
+  call, which stays only as a fallback when a fork has no release asset
+  in the catalog. The detail page shows the catalog description and
+  cover art, and the selected fork's repo, package and verified flag.
+- SHA-256 verification: after downloading an APK via a catalog asset
+  URL, ONE hashes the file and compares it to the catalog's `sha256`
+  before offering Install. On a mismatch it refuses with "Download did
+  not match the catalog checksum — not installing." and deletes the
+  file. A verified download shows "SHA-256 verified against the
+  catalog." Signer verification (the catalog's `signer_sha256`) is a
+  follow-up, not this round.
+- Settings → About gains: "Catalog data: Recompa (recompa.app),
+  GPL-3.0 — ports are their authors' own projects; ONE lists them, it
+  does not host them." (opens recompa.app in the browser).
+- Tests: unit tests for the catalog mapping (extensions from `assets[]`,
+  fork fields, package names), the merge with the curated 5 (curated
+  wins on conflict, catalog adds the rest, unmatched curated ports
+  reported), schema_version rejection, a port with no `assets[]`
+  (matching disabled), and the SHA-256 helper (known vector, match +
+  mismatch). No live-network tests.
+- Scope unchanged: no game files in the repo or the app; Premiumize
+  own-cloud only; custom links browser-only.
+
 ## v1.2.0 — 2026-11-15
 
 Detail page now shows your files in two sections — Premiumize and Local —

@@ -32,14 +32,21 @@ import dev.one.launcher.data.PremiumizeApi
 import dev.one.launcher.data.PremiumizeBreadcrumb
 import dev.one.launcher.data.PremiumizeItem
 import dev.one.launcher.data.PremiumizeResult
+import dev.one.launcher.data.RecompaCatalogApi
+import dev.one.launcher.data.RecompaIndex
+import dev.one.launcher.data.RecompaPlatform
 import dev.one.launcher.data.ReleaseResult
 import dev.one.launcher.data.SecureKeyStore
 import dev.one.launcher.data.compareVersions
+import dev.one.launcher.data.mapCatalogPort
+import dev.one.launcher.data.mergeCatalogs
 import dev.one.launcher.data.normalizeCustomLinkUrl
 import dev.one.launcher.data.pickApkAsset
 import dev.one.launcher.data.resolveDetected
+import dev.one.launcher.data.sha256Matches
 import dev.one.launcher.model.Port
 import dev.one.launcher.model.PortCatalog
+import dev.one.launcher.model.PortFork
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -85,7 +92,9 @@ sealed class ReleaseState {
         /** The .apk to offer, or null when the release ships no Android APK. */
         val apk: GitHubAsset?,
         /** Installed versionName, or null when the port is not installed. */
-        val installedVersion: String?
+        val installedVersion: String?,
+        /** Catalog SHA-256 of the APK, or null when unknown (GitHub fallback). */
+        val expectedSha256: String? = null
     ) : ReleaseState() {
         /** True when the release tag is newer than the installed version. */
         val updateAvailable: Boolean
@@ -103,8 +112,25 @@ data class ApkInstallState(
     val downloadedFile: File? = null,
     /** True when installs from unknown sources are not yet allowed for ONE. */
     val blockedByUnknownSources: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    /** True when the downloaded APK matched the catalog SHA-256. */
+    val shaVerified: Boolean = false
 )
+
+/** Recompa catalog load state. */
+sealed class CatalogState {
+    data object Loading : CatalogState()
+    data class Ready(
+        val portCount: Int,
+        val generatedAt: String,
+        val fromCache: Boolean,
+        /** Curated port ids with no catalog match — reported, never guessed. */
+        val unmatchedCuratedIds: List<String>,
+        /** Catalog port ids whose assets[] is missing — file matching off. */
+        val portsWithoutFileInfo: List<String>
+    ) : CatalogState()
+    data class Unavailable(val message: String) : CatalogState()
+}
 
 class OneViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -253,8 +279,35 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     private val _folderTrail = MutableStateFlow<List<String>>(listOf("My cloud"))
     val folderTrail: StateFlow<List<String>> = _folderTrail.asStateFlow()
 
+    /**
+     * The Library's port list: curated ports.json first, then merged
+     * with the Recompa catalog (curated stays canonical). `ports` is a
+     * plain read of this flow for ViewModel-internal use; composables
+     * collect [portsFlow] so the list updates when the catalog lands.
+     */
+    private val _ports = MutableStateFlow<List<Port>>(emptyList())
+    val portsFlow: StateFlow<List<Port>> = _ports.asStateFlow()
+
+    /** Recompa catalog load state (Loading until the first merge/failure). */
+    private val _catalogState = MutableStateFlow<CatalogState>(CatalogState.Loading)
+    val catalogState: StateFlow<CatalogState> = _catalogState.asStateFlow()
+
+    /** Platforms from the catalog, for the Library platform filter. */
+    private val _catalogPlatforms = MutableStateFlow<List<RecompaPlatform>>(emptyList())
+    val catalogPlatforms: StateFlow<List<RecompaPlatform>> =
+        _catalogPlatforms.asStateFlow()
+
+    /** Selected fork repo per port id, for ports with more than one fork. */
+    private val _selectedForks = MutableStateFlow<Map<String, String>>(emptyMap())
+    val selectedForks: StateFlow<Map<String, String>> = _selectedForks.asStateFlow()
+
+    private val recompaApi = RecompaCatalogApi(application)
+
     val catalogNote: String
-    val ports: List<Port>
+    val ports: List<Port> get() = _ports.value
+
+    /** The curated ports.json entries, kept for every catalog re-merge. */
+    private lateinit var curatedPorts: List<Port>
 
     init {
         val catalog = try {
@@ -263,8 +316,13 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
             PortCatalog()
         }
         catalogNote = catalog.catalogNote
-        ports = catalog.ports
+        curatedPorts = catalog.ports
+        _ports.value = catalog.ports
         refreshLibrary()
+        // Recompa catalog: serve the cache immediately, then refresh in
+        // the background (stale-while-revalidate). Failure with no cache
+        // leaves the curated list in place with a plain note.
+        viewModelScope.launch { loadCatalog() }
         // Keep the on-device custom links in state.
         viewModelScope.launch {
             customLinksStore.links.collect { _customLinks.value = it }
@@ -300,6 +358,85 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
         // Re-scan the local folder in the background when one is set, so
         // a file the user just added shows up without re-picking it.
         scanLocalFolder()
+    }
+
+    // ---- Recompa catalog ----
+
+    /** Merge one fetched index into the Library. Curated stays canonical. */
+    private fun applyCatalog(index: RecompaIndex, fromCache: Boolean) {
+        val platformNames = index.platforms.associate { it.id to it.name }
+        val catalogPorts = index.ports.map { mapCatalogPort(it, platformNames[it.original_platform].orEmpty()) }
+        val merge = mergeCatalogs(curatedPorts, catalogPorts)
+        _ports.value = merge.merged
+        _catalogPlatforms.value = index.platforms
+        _catalogState.value = CatalogState.Ready(
+            portCount = merge.merged.size,
+            generatedAt = index.generated_at,
+            fromCache = fromCache,
+            unmatchedCuratedIds = merge.unmatchedCuratedIds,
+            portsWithoutFileInfo = merge.portsWithoutFileInfo
+        )
+        rebuildStatuses()
+        scanLocalFolder()
+    }
+
+    /** Cached index first (cold start), then a background network refresh. */
+    private suspend fun loadCatalog() {
+        val cached = withContext(Dispatchers.IO) { recompaApi.loadCached() }
+        if (cached != null) applyCatalog(cached, fromCache = true)
+        val fresh = recompaApi.refresh()
+        if (fresh != null) {
+            applyCatalog(fresh, fromCache = false)
+        } else if (cached == null) {
+            _catalogState.value = CatalogState.Unavailable(
+                "Recompa catalog unavailable — showing your curated ports."
+            )
+        }
+    }
+
+    /**
+     * Manual catalog refresh from the Library. Fetches the index; on
+     * failure the last cached index (or the curated list) stays in place.
+     */
+    fun refreshCatalog() {
+        viewModelScope.launch {
+            _catalogState.value = CatalogState.Loading
+            val fresh = recompaApi.refresh()
+            if (fresh != null) {
+                applyCatalog(fresh, fromCache = false)
+            } else {
+                val cached = withContext(Dispatchers.IO) { recompaApi.loadCached() }
+                if (cached != null) {
+                    applyCatalog(cached, fromCache = true)
+                } else {
+                    _catalogState.value = CatalogState.Unavailable(
+                        "Recompa catalog unavailable — showing your curated ports."
+                    )
+                }
+            }
+            refreshLibrary()
+        }
+    }
+
+    /**
+     * The fork driving a port's "Latest release" block: the user's pick,
+     * else the fork matching the curated repo, else the first fork.
+     * Null when the port has no catalog forks.
+     */
+    fun selectedFork(port: Port): PortFork? {
+        if (port.forks.isEmpty()) return null
+        val picked = _selectedForks.value[port.id]
+        if (picked != null) {
+            port.forks.firstOrNull { it.repo == picked }?.let { return it }
+        }
+        port.forks.firstOrNull { it.repo == port.repo }?.let { return it }
+        return port.forks.first()
+    }
+
+    /** Pick a fork for a port with more than one; reloads its release. */
+    fun selectFork(portId: String, repo: String) {
+        _selectedForks.value = _selectedForks.value + (portId to repo)
+        fetchRelease(portId, force = true)
     }
 
     /** Rebuilds every port's status from the current on-device state. */
@@ -754,8 +891,12 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Fetch the latest release for a port. Results are cached per port for
-     * the session; pass force = true for "Check for updates". Fetches
-     * metadata only — the APK downloads only when the user taps Download.
+     * the session; pass force = true for "Check for updates" or a fork
+     * change. The catalog's release data is preferred (tag + asset URL +
+     * size + SHA-256, no extra network call); the GitHub releases/latest
+     * API is only a fallback when the selected fork has no release asset
+     * in the catalog. Fetches metadata only — the APK downloads only when
+     * the user taps Download.
      */
     fun fetchRelease(portId: String, force: Boolean = false) {
         val port = portById(portId) ?: return
@@ -763,17 +904,41 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
         // A forced check re-reads what is installed first, so "Up to date"
         // is true right after an install from the system installer.
         if (force) refreshLibrary()
+        val installedPkg = _portStatuses.value[portId]?.installedPackage
+        val installedVersion = installedPkg?.let { installedVersion(it) }
+        val fork = selectedFork(port)
+        if (fork != null && fork.latestAssetUrl.isNotBlank()) {
+            val asset = GitHubAsset(
+                name = fork.latestAssetName,
+                browser_download_url = fork.latestAssetUrl,
+                size = fork.latestAssetSize
+            )
+            _releaseStates.value = _releaseStates.value + (
+                portId to ReleaseState.Loaded(
+                    release = GitHubRelease(
+                        tag_name = fork.latestTag,
+                        name = fork.latestTag,
+                        html_url = "https://github.com/${fork.repo}/releases",
+                        assets = listOf(asset)
+                    ),
+                    apk = asset,
+                    installedVersion = installedVersion,
+                    expectedSha256 = fork.latestAssetSha256.takeIf { it.isNotBlank() }
+                )
+            )
+            return
+        }
         _releaseStates.value = _releaseStates.value + (portId to ReleaseState.Loading)
         viewModelScope.launch {
             when (val result = releasesApi.latestRelease(port.repo)) {
                 is ReleaseResult.Success -> {
-                    val installedPkg = _portStatuses.value[portId]?.installedPackage
-                    val installedVersion = installedPkg?.let { installedVersion(it) }
+                    val installedPkgNow = _portStatuses.value[portId]?.installedPackage
+                    val installedVersionNow = installedPkgNow?.let { installedVersion(it) }
                     _releaseStates.value = _releaseStates.value + (
                         portId to ReleaseState.Loaded(
                             release = result.release,
                             apk = pickApkAsset(result.release),
-                            installedVersion = installedVersion
+                            installedVersion = installedVersionNow
                         )
                     )
                 }
@@ -796,11 +961,16 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Download the picked release APK into Downloads/ONE. Install is a
-     *  separate, explicit step — nothing installs silently. */
+     *  separate, explicit step — nothing installs silently. When the
+     *  catalog gave a SHA-256 for the asset, the file is hashed after the
+     *  download and only offered for install when it matches; on a
+     *  mismatch the file is deleted and the state carries a plain error.
+     *  (Signer verification is a follow-up, not this round.) */
     fun downloadApk(portId: String) {
         val loaded = _releaseStates.value[portId] as? ReleaseState.Loaded ?: return
         val apk = loaded.apk ?: return
         if (apk.browser_download_url.isBlank()) return
+        val expectedSha = loaded.expectedSha256
         _apkInstallStates.value = _apkInstallStates.value +
             (portId to ApkInstallState(downloading = true))
         viewModelScope.launch {
@@ -818,8 +988,30 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
                             ))
                     }
                     is DownloadState.Done -> {
-                        _apkInstallStates.value = _apkInstallStates.value +
-                            (portId to ApkInstallState(downloadedFile = state.file))
+                        if (!expectedSha.isNullOrBlank()) {
+                            viewModelScope.launch(Dispatchers.IO) {
+                                val ok = sha256Matches(state.file, expectedSha)
+                                withContext(Dispatchers.Main) {
+                                    if (ok) {
+                                        _apkInstallStates.value = _apkInstallStates.value +
+                                            (portId to ApkInstallState(
+                                                downloadedFile = state.file,
+                                                shaVerified = true
+                                            ))
+                                    } else {
+                                        state.file.delete()
+                                        _apkInstallStates.value = _apkInstallStates.value +
+                                            (portId to ApkInstallState(
+                                                error = "Download did not match the catalog " +
+                                                    "checksum — not installing."
+                                            ))
+                                    }
+                                }
+                            }
+                        } else {
+                            _apkInstallStates.value = _apkInstallStates.value +
+                                (portId to ApkInstallState(downloadedFile = state.file))
+                        }
                     }
                     is DownloadState.Error -> {
                         _apkInstallStates.value = _apkInstallStates.value +
