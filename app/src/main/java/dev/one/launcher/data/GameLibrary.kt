@@ -40,15 +40,6 @@ data class GameEntry(
 fun gameKey(title: String, platform: String): String =
     slugify(title) + "--" + slugify(platform)
 
-/**
- * Display name for a platform (v1.6.1). The catalog calls platform id
- * "other" "Otra" — the app shows "Other". Catalog data is untouched;
- * this is display only, applied where a game is grouped so every UI
- * surface (shelf, game page, platform filter, rail) agrees.
- */
-fun displayPlatformName(platformId: String, platformName: String): String =
-    if (platformId.equals("other", ignoreCase = true)) "Other" else platformName
-
 private fun slugify(text: String): String =
     text.lowercase()
         .replace(Regex("[^a-z0-9]+"), "-")
@@ -82,10 +73,12 @@ fun groupPortsByGame(ports: List<Port>): List<GameEntry> {
     for (port in ports) {
         if (isEmulator(port)) continue
         val title = port.game.ifBlank { port.title }
-        val platform = displayPlatformName(
-            port.platformId,
-            port.platformName.ifBlank { port.system }
-        )
+        // The platform is the catalog's name as-is (so platform id
+        // "other" shows "Otra", the catalog's own name — v1.7.0 reverted
+        // the v1.6.1 "Other" display mapping, which Garrett never
+        // asked for), falling back to the port's system name when the
+        // catalog gave none.
+        val platform = port.platformName.ifBlank { port.system }
         groups.getOrPut(title to platform) { mutableListOf() }.add(port)
     }
     return groups.entries
@@ -104,6 +97,14 @@ fun groupPortsByGame(ports: List<Port>): List<GameEntry> {
                 .thenBy { it.platform.lowercase() }
         )
 }
+
+/**
+ * Grid columns for the unfolded Library (v1.7.0): 3 wide while the
+ * detail pane is open, 5 wide when it is closed. A pure function of
+ * the detail pane state, so it is unit-testable; the grid rendering
+ * itself is Compose UI and is not JVM-testable.
+ */
+fun unfoldedGridColumns(detailOpen: Boolean): Int = if (detailOpen) 3 else 5
 
 // ---- Game-level file matching ----
 

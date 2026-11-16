@@ -1,5 +1,48 @@
 # Changelog
 
+## v1.7.0 — 2026-11-16
+
+Garrett's two narrated videos on the v1.6.1 Library layout, plus one
+revert. Folded: the horizontal game shelf is fine as-is, but the top
+bar (console chips, "Has files", search) now collapses on scroll and
+the shelf pins directly under the PORTSIDE header, so the selected
+game below gets the freed room; the selected-game view gets an X to
+close just that pop-up view, and tapping anywhere on it (the art, the
+title, the empty space) opens the game page, not only the "View game"
+button. Unfolded: the long vertical console rail is gone — the
+consoles are a horizontal chip row at the top, and the games are a
+vertically scrolling grid, 3 wide with the detail pane open and 5
+wide when it is closed (the pane keeps the game/port page, with an X
+to close it). Revert: platform id "other" shows the catalog's own
+name "Otra" again — the v1.6.1 "Other" display mapping was never
+requested. Upgrades in place over the v1.6.1 release build (same
+signature).
+
+- Folded (GameList): the Library scrolls as one LazyColumn — the
+  search row, the console chips, and the catalog status scroll away,
+  and the shelf is a stickyHeader that pins under the PORTSIDE header.
+  The selected-game hero is tappable anywhere (opens the game page)
+  and carries a close X in its corner; picking another game, or a new
+  search/filter selection, opens it again. The "Has files" chip,
+  search, and console filter are unchanged.
+- Unfolded (new UnfoldedLibrary): the console rail is removed; the
+  consoles are the same horizontally scrolling chip row at the top,
+  above a LazyVerticalGrid of games. The grid is 3 columns while the
+  detail pane is open and 5 when it is closed (pure function
+  unfoldedGridColumns in data/GameLibrary.kt — unit-tested; the grid
+  rendering, the collapse/pin behavior, the tap targets, and the X
+  buttons are Compose UI and are not JVM-testable). The detail pane
+  keeps the game page / port detail, with an X to close it; selecting
+  a game in the grid reopens it. Search, "Has files", and the
+  catalog status stay at the top.
+- Revert: displayPlatformName is removed; groupPortsByGame uses the
+  catalog's platform name as-is, so "The Dark Knight Rises" reads
+  "Otra" again everywhere (shelf, game page, filter, grid). Catalog
+  data untouched. The v1.6.1 "Other" unit test now asserts "Otra".
+- Unchanged: the game-centric grouping, star ranking, "Has files"
+  filter, the v1.6.1 matching gate / extension dictionary / JSON
+  display filter, and the port detail page content.
+
 ## v1.6.1 — 2026-11-16
 
 Garrett's v1.6.0 device report: movie files were matching to games

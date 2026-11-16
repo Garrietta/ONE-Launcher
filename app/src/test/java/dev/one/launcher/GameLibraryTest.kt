@@ -10,7 +10,6 @@ import dev.one.launcher.data.PortMatcher
 import dev.one.launcher.data.RemoteEntry
 import dev.one.launcher.data.STAR_CACHE_TTL_MS
 import dev.one.launcher.data.dedupeGameFiles
-import dev.one.launcher.data.displayPlatformName
 import dev.one.launcher.data.gamesWithFiles
 import dev.one.launcher.data.groupPortsByGame
 import dev.one.launcher.data.hintsFromGameTitle
@@ -20,6 +19,7 @@ import dev.one.launcher.data.matchLocalFilesForGame
 import dev.one.launcher.data.matchServerFilesForGame
 import dev.one.launcher.data.normalizeForTokens
 import dev.one.launcher.data.rankPortsByStars
+import dev.one.launcher.data.unfoldedGridColumns
 import dev.one.launcher.model.Port
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -705,16 +705,24 @@ class GameLibraryTest {
     }
 
     @Test
-    fun displayPlatformNameMapsOtherToOther() {
-        assertEquals("Other", displayPlatformName("other", "Otra"))
-        assertEquals("Other", displayPlatformName("Other", "Otra"))
-        assertEquals("Nintendo 64", displayPlatformName("n64", "Nintendo 64"))
-        assertEquals("Nintendo DS", displayPlatformName("ds", "Nintendo DS"))
-        // The game groups under "Other", so the shelf, the game page,
-        // and the platform filter all show it.
+    fun platformOtherKeepsCatalogNameOtra() {
+        // v1.7.0 revert: platform id "other" shows the catalog's own
+        // name "Otra" again. The v1.6.1 "Other" display mapping was
+        // never requested — Garrett knows "Otra" means "other" and it
+        // was never an issue. Catalog data untouched.
         val games = groupPortsByGame(listOf(darkKnightRises))
-        assertEquals("Other", games.single().platform)
+        assertEquals("Otra", games.single().platform)
         assertEquals("The Dark Knight Rises", games.single().title)
+    }
+
+    @Test
+    fun unfoldedGridColumnsThreeWithDetailOpenFiveWhenClosed() {
+        // v1.7.0 unfolded layout: the game grid is 3 wide while the
+        // detail pane is open and expands to 5 wide when it is
+        // closed. Pure function of the detail pane state — the grid
+        // rendering itself is Compose UI, not JVM-testable.
+        assertEquals(3, unfoldedGridColumns(true))
+        assertEquals(5, unfoldedGridColumns(false))
     }
 }
 

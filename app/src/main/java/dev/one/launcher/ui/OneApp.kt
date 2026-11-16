@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -34,7 +35,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.item
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.stickyHeader
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -44,6 +50,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
@@ -134,6 +141,7 @@ import dev.one.launcher.data.matchServerFilesForGame
 import dev.one.launcher.data.parseHiddenExtensions
 import dev.one.launcher.data.rankPortsByStars
 import dev.one.launcher.data.shouldShowRemoteEntry
+import dev.one.launcher.data.unfoldedGridColumns
 import dev.one.launcher.model.Port
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -401,7 +409,6 @@ private fun LibraryScreen(
     onGoToCloud: () -> Unit
 ) {
     val statuses by viewModel.portStatuses.collectAsState()
-    val selectedPortId by viewModel.selectedPortId.collectAsState()
     val selectedGameKey by viewModel.selectedGameKey.collectAsState()
     val cloudFiles by viewModel.cloudAllFiles.collectAsState()
     val ports by viewModel.portsFlow.collectAsState()
@@ -455,62 +462,29 @@ private fun LibraryScreen(
     }
 
     if (unfolded) {
-        Row(modifier = Modifier.fillMaxSize()) {
-            // Unfolded console rail: the platforms, vertical, like the
-            // concept's left rail. Folded, the same options are the one
-            // sideways-scrolling chip row inside GameList.
-            PlatformRail(
-                platformOptions = platformOptions,
-                selectedPlatform = platformFilter,
-                onPlatformChange = { platformFilter = it }
-            )
-            GameList(
-                games = filteredGames,
-                statuses = statuses,
-                cloudFiles = cloudFiles,
-                selectedGameKey = selectedGame?.key,
-                onSelectGame = onSelectGame,
-                onOpenGame = onOpenGame,
-                onPlay = onPlay,
-                unfolded = unfolded,
-                modifier = Modifier.weight(0.42f),
-                onRefresh = { viewModel.refreshCatalog() },
-                query = query,
-                onQueryChange = { query = it },
-                platformOptions = platformOptions,
-                selectedPlatform = platformFilter,
-                onPlatformChange = { platformFilter = it },
-                matchesOnly = matchesOnly,
-                onMatchesOnlyChange = { matchesOnly = it },
-                catalogStatusText = catalogStatusText
-            )
-            // The detail pane: a port opened from a game page, else
-            // the selected game page.
-            val selectedPort = selectedPortId?.let { viewModel.portById(it) }
-            if (selectedPort != null) {
-                GameDetailContent(
-                    viewModel = viewModel,
-                    port = selectedPort,
-                    onGoToCloud = onGoToCloud,
-                    modifier = Modifier.weight(0.58f)
-                )
-            } else if (selectedGame != null) {
-                GamePageContent(
-                    viewModel = viewModel,
-                    game = selectedGame,
-                    onOpenDetail = onOpenDetail,
-                    onGoToCloud = onGoToCloud,
-                    modifier = Modifier.weight(0.58f)
-                )
-            } else {
-                Box(
-                    modifier = Modifier.weight(0.58f),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("Select a game to see its details")
-                }
-            }
-        }
+        // Unfolded: no vertical console rail — the consoles are a
+        // horizontal row on top and the games are a vertical grid
+        // (3 wide with the detail pane open, 5 wide when it is
+        // closed). The detail pane keeps the game/port page, with an
+        // X to close it.
+        UnfoldedLibrary(
+            viewModel = viewModel,
+            games = filteredGames,
+            statuses = statuses,
+            selectedGame = selectedGame,
+            onSelectGame = onSelectGame,
+            onOpenDetail = onOpenDetail,
+            onGoToCloud = onGoToCloud,
+            onRefresh = { viewModel.refreshCatalog() },
+            query = query,
+            onQueryChange = { query = it },
+            platformOptions = platformOptions,
+            selectedPlatform = platformFilter,
+            onPlatformChange = { platformFilter = it },
+            matchesOnly = matchesOnly,
+            onMatchesOnlyChange = { matchesOnly = it },
+            catalogStatusText = catalogStatusText
+        )
     } else {
         GameList(
             games = filteredGames,
@@ -520,7 +494,6 @@ private fun LibraryScreen(
             onSelectGame = onSelectGame,
             onOpenGame = onOpenGame,
             onPlay = onPlay,
-            unfolded = unfolded,
             modifier = Modifier.fillMaxSize(),
             onRefresh = { viewModel.refreshCatalog() },
             query = query,
@@ -535,7 +508,7 @@ private fun LibraryScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 private fun GameList(
     games: List<GameEntry>,
@@ -545,7 +518,6 @@ private fun GameList(
     onSelectGame: (String) -> Unit,
     onOpenGame: (String) -> Unit,
     onPlay: (String) -> Unit,
-    unfolded: Boolean,
     modifier: Modifier,
     onRefresh: () -> Unit,
     query: String,
@@ -559,71 +531,350 @@ private fun GameList(
 ) {
     // The selected game: the ViewModel's selection when one is set, else
     // the first game in the filtered list — so the shelf always has a
-    // hero (folded) or a detail pane (unfolded) to show.
+    // hero to show.
     val selectedGame = remember(games, selectedGameKey) {
         selectedGameKey?.let { key -> games.firstOrNull { it.key == key } }
             ?: games.firstOrNull()
     }
+    // The hero (the selected game, large, below the shelf) is a pop-up
+    // view: the X in its corner dismisses it, leaving the shelf only.
+    // Picking another game — on the shelf, or by a new search/filter
+    // selection — opens it again.
+    var heroVisible by remember { mutableStateOf(true) }
+    LaunchedEffect(selectedGame?.key) { heroVisible = true }
+
     Column(modifier = modifier) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "PORTSIDE",
-                style = MaterialTheme.typography.headlineMedium,
-                modifier = Modifier.weight(1f)
-            )
-            IconButton(onClick = onRefresh) {
-                Icon(Icons.Filled.Refresh, contentDescription = "Refresh library and catalog")
-            }
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            OutlinedTextField(
-                value = query,
-                onValueChange = onQueryChange,
-                label = { Text("Search games") },
-                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                singleLine = true,
-                modifier = Modifier.weight(1f)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            // "Has files": only games with at least one matching file
-            // (local, cloud, or server). Sits beside search in both
-            // postures, and composes with the platform filter.
-            FilterChip(
-                selected = matchesOnly,
-                onClick = { onMatchesOnlyChange(!matchesOnly) },
-                label = { Text("Has files") }
-            )
-        }
-        if (!unfolded && platformOptions.isNotEmpty()) {
-            // One horizontally scrolling row, not a wrapping grid: on the
-            // folded screen the old FlowRow ran to ~6 rows and left room
-            // for about one port card below it. Unfolded, the platforms
-            // live in the console rail instead.
-            Row(
-                modifier = Modifier.fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                FilterChip(
-                    selected = selectedPlatform.isEmpty(),
-                    onClick = { onPlatformChange("") },
-                    label = { Text("All") }
+        // The PORTSIDE header stays fixed at the top; everything
+        // below it scrolls.
+        LibraryHeader(onRefresh = onRefresh)
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            // The top bar — search, "Has files", the console chips,
+            // and the catalog status — scrolls away on a scroll.
+            item {
+                LibrarySearchRow(
+                    query = query,
+                    onQueryChange = onQueryChange,
+                    matchesOnly = matchesOnly,
+                    onMatchesOnlyChange = onMatchesOnlyChange
                 )
-                platformOptions.forEach { (id, name) ->
-                    FilterChip(
-                        selected = selectedPlatform == id,
-                        onClick = { onPlatformChange(id) },
-                        label = { Text(name) }
+            }
+            if (platformOptions.isNotEmpty()) {
+                item {
+                    ConsoleChipRow(
+                        platformOptions = platformOptions,
+                        selectedPlatform = selectedPlatform,
+                        onPlatformChange = onPlatformChange
                     )
                 }
             }
+            item {
+                Text(
+                    text = catalogStatusText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
+            // The shelf: covers as a horizontal row of spines, one per
+            // game. It pins (sticky) directly under the PORTSIDE header
+            // once the top bar has scrolled away, so the user can still
+            // scroll games horizontally at the top while the selected
+            // game below gets the freed room.
+            stickyHeader {
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth().height(216.dp)
+                        .background(MaterialTheme.colorScheme.background),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(games, key = { it.key }) { game ->
+                        val anyInstalled = game.ports.any { statuses[it.id]?.isInstalled == true }
+                        GameSpine(
+                            game = game,
+                            selected = game.key == selectedGame?.key,
+                            isInstalled = anyInstalled,
+                            onClick = {
+                                heroVisible = true
+                                onSelectGame(game.key)
+                            }
+                        )
+                    }
+                }
+            }
+            // Folded hero: the selected game large, with its title and
+            // actions. Tapping anywhere on it — the art, the title,
+            // the empty space — opens the game page, not only the
+            // "View game" button. The X in the corner dismisses just
+            // this pop-up view, leaving the shelf only.
+            if (selectedGame != null && heroVisible) {
+                item {
+                    val anyInstalled = selectedGame.ports.any {
+                        statuses[it.id]?.isInstalled == true
+                    }
+                    val firstInstalled = selectedGame.ports.firstOrNull {
+                        statuses[it.id]?.isInstalled == true
+                    }
+                    val anyFile = selectedGame.ports.any {
+                        statuses[it.id]?.hasFile == true
+                    }
+                    val hasCloudFile = cloudFiles.any { item ->
+                        selectedGame.ports.any { port ->
+                            PortMatcher.matchKind(item.name, port, item.link) != null
+                        }
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onOpenGame(selectedGame.key) }
+                    ) {
+                        Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                            if (selectedGame.coverArtUrl.isNotBlank()) {
+                                AsyncImage(
+                                    model = selectedGame.coverArtUrl,
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(220.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+                            }
+                            Text(
+                                text = selectedGame.title,
+                                style = MaterialTheme.typography.headlineSmall
+                            )
+                            Text(
+                                text = selectedGame.platform,
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = if (selectedGame.ports.size == 1) {
+                                    "1 port"
+                                } else {
+                                    "${selectedGame.ports.size} ports"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                StatusChip(text = when {
+                                    anyInstalled && anyFile -> "Ready to play"
+                                    anyInstalled -> "Installed"
+                                    anyFile -> "File matched"
+                                    else -> "Not installed"
+                                })
+                                val fileText = when {
+                                    anyFile -> "File on device"
+                                    hasCloudFile -> "File in cloud"
+                                    else -> null
+                                }
+                                if (fileText != null) {
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.secondaryContainer,
+                                        shape = MaterialTheme.shapes.small
+                                    ) {
+                                        Text(
+                                            text = fileText,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            modifier = Modifier.padding(
+                                                horizontal = 8.dp,
+                                                vertical = 4.dp
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (firstInstalled != null) {
+                                    Button(onClick = { onPlay(firstInstalled.id) }) {
+                                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Play")
+                                    }
+                                }
+                                OutlinedButton(onClick = { onOpenGame(selectedGame.key) }) {
+                                    Text("View game")
+                                }
+                            }
+                        }
+                        // The X: dismisses just this pop-up view.
+                        // It is a sibling of the tappable hero column,
+                        // so tapping it closes without opening the page.
+                        IconButton(
+                            onClick = { heroVisible = false },
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(8.dp)
+                                .background(
+                                    Color.Black.copy(alpha = 0.6f),
+                                    CircleShape
+                                )
+                        ) {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = "Close selected game",
+                                tint = Color.White
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+/**
+ * The PORTSIDE header, fixed at the top of the Library in both
+ * postures. The refresh button re-fetches the catalog.
+ */
+@Composable
+private fun LibraryHeader(onRefresh: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "PORTSIDE",
+            style = MaterialTheme.typography.headlineMedium,
+            modifier = Modifier.weight(1f)
+        )
+        IconButton(onClick = onRefresh) {
+            Icon(Icons.Filled.Refresh, contentDescription = "Refresh library and catalog")
+        }
+    }
+}
+
+/**
+ * The Library search row: the search box and the "Has files" chip
+ * beside it. Shared by the folded and unfolded layouts.
+ */
+@Composable
+private fun LibrarySearchRow(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    matchesOnly: Boolean,
+    onMatchesOnlyChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        OutlinedTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            label = { Text("Search games") },
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+            singleLine = true,
+            modifier = Modifier.weight(1f)
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        // "Has files": only games with at least one matching file
+        // (local, cloud, or server). Composes with the platform filter.
+        FilterChip(
+            selected = matchesOnly,
+            onClick = { onMatchesOnlyChange(!matchesOnly) },
+            label = { Text("Has files") }
+        )
+    }
+}
+
+/**
+ * The console (platform) options as one horizontally scrolling chip
+ * row. Folded it is the row under the search box; unfolded it is the
+ * row at the top of the Library, replacing the old vertical console
+ * rail. The options and the filtering behavior are the same in both
+ * postures.
+ */
+@Composable
+private fun ConsoleChipRow(
+    platformOptions: List<Pair<String, String>>,
+    selectedPlatform: String,
+    onPlatformChange: (String) -> Unit
+) {
+    // One horizontally scrolling row, not a wrapping grid: on the
+    // folded screen the old FlowRow ran to ~6 rows and left room for
+    // about one port card below it.
+    Row(
+        modifier = Modifier.fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        FilterChip(
+            selected = selectedPlatform.isEmpty(),
+            onClick = { onPlatformChange("") },
+            label = { Text("All") }
+        )
+        platformOptions.forEach { (id, name) ->
+            FilterChip(
+                selected = selectedPlatform == id,
+                onClick = { onPlatformChange(id) },
+                label = { Text(name) }
+            )
+        }
+    }
+}
+
+/**
+ * The unfolded Library (v1.7.0): no vertical console rail — the
+ * consoles are a horizontal chip row at the top, above a vertically
+ * scrolling GRID of games. The grid is 3 columns wide while the
+ * detail pane is open and expands to 5 wide when the pane is closed
+ * (see [unfoldedGridColumns]). The detail pane shows the selected
+ * game's page (or a port's detail page, when one is open from it),
+ * with an X in the corner to close it. Selecting a game in the grid
+ * reopens the pane for that game.
+ */
+@Composable
+private fun UnfoldedLibrary(
+    viewModel: OneViewModel,
+    games: List<GameEntry>,
+    statuses: Map<String, PortStatus>,
+    selectedGame: GameEntry?,
+    onSelectGame: (String) -> Unit,
+    onOpenDetail: (String) -> Unit,
+    onGoToCloud: () -> Unit,
+    onRefresh: () -> Unit,
+    query: String,
+    onQueryChange: (String) -> Unit,
+    platformOptions: List<Pair<String, String>>,
+    selectedPlatform: String,
+    onPlatformChange: (String) -> Unit,
+    matchesOnly: Boolean,
+    onMatchesOnlyChange: (Boolean) -> Unit,
+    catalogStatusText: String
+) {
+    val selectedPortId by viewModel.selectedPortId.collectAsState()
+    // The detail pane starts open (it shows the selected game) and
+    // closes with its X. Selecting a game reopens it.
+    var detailOpen by remember { mutableStateOf(true) }
+    val selectedPort = selectedPortId?.let { viewModel.portById(it) }
+    // The pane is only visible when it has something to show; with
+    // no game or port selected (an empty Library) the grid takes the
+    // full width.
+    val detailVisible = detailOpen && (selectedPort != null || selectedGame != null)
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        LibraryHeader(onRefresh = onRefresh)
+        LibrarySearchRow(
+            query = query,
+            onQueryChange = onQueryChange,
+            matchesOnly = matchesOnly,
+            onMatchesOnlyChange = onMatchesOnlyChange
+        )
+        if (platformOptions.isNotEmpty()) {
+            ConsoleChipRow(
+                platformOptions = platformOptions,
+                selectedPlatform = selectedPlatform,
+                onPlatformChange = onPlatformChange
+            )
         }
         Text(
             text = catalogStatusText,
@@ -631,122 +882,156 @@ private fun GameList(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
         )
-        Column(
-            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-        ) {
-            // The shelf: covers as a horizontal row of spines, one per
-            // game. Tapping a spine selects the game — folded it fills
-            // the hero below, unfolded it fills the detail pane.
-            LazyRow(
-                modifier = Modifier.fillMaxWidth().height(216.dp),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+        Row(modifier = Modifier.weight(1f)) {
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(unfoldedGridColumns(detailVisible)),
+                modifier = Modifier.weight(if (detailVisible) 0.42f else 1f),
+                contentPadding = PaddingValues(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 items(games, key = { it.key }) { game ->
                     val anyInstalled = game.ports.any { statuses[it.id]?.isInstalled == true }
-                    GameSpine(
+                    GameGridCard(
                         game = game,
                         selected = game.key == selectedGame?.key,
                         isInstalled = anyInstalled,
-                        onClick = { onSelectGame(game.key) }
+                        onClick = {
+                            detailOpen = true
+                            onSelectGame(game.key)
+                        }
                     )
                 }
             }
-            // Folded hero: the selected game large, with its title and
-            // actions. Unfolded, the detail pane plays this role.
-            if (!unfolded && selectedGame != null) {
-                val anyInstalled = selectedGame.ports.any {
-                    statuses[it.id]?.isInstalled == true
-                }
-                val firstInstalled = selectedGame.ports.firstOrNull {
-                    statuses[it.id]?.isInstalled == true
-                }
-                val anyFile = selectedGame.ports.any {
-                    statuses[it.id]?.hasFile == true
-                }
-                val hasCloudFile = cloudFiles.any { item ->
-                    selectedGame.ports.any { port ->
-                        PortMatcher.matchKind(item.name, port, item.link) != null
-                    }
-                }
-                Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                    if (selectedGame.coverArtUrl.isNotBlank()) {
-                        AsyncImage(
-                            model = selectedGame.coverArtUrl,
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(220.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant)
+            if (detailVisible) {
+                Box(
+                    modifier = Modifier.weight(0.58f).fillMaxHeight()
+                ) {
+                    if (selectedPort != null) {
+                        GameDetailContent(
+                            viewModel = viewModel,
+                            port = selectedPort,
+                            onGoToCloud = onGoToCloud,
+                            modifier = Modifier.fillMaxSize()
                         )
-                        Spacer(modifier = Modifier.height(12.dp))
+                    } else if (selectedGame != null) {
+                        GamePageContent(
+                            viewModel = viewModel,
+                            game = selectedGame,
+                            onOpenDetail = onOpenDetail,
+                            onGoToCloud = onGoToCloud,
+                            modifier = Modifier.fillMaxSize()
+                        )
                     }
-                    Text(
-                        text = selectedGame.title,
-                        style = MaterialTheme.typography.headlineSmall
-                    )
-                    Text(
-                        text = selectedGame.platform,
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = if (selectedGame.ports.size == 1) {
-                            "1 port"
-                        } else {
-                            "${selectedGame.ports.size} ports"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        StatusChip(text = when {
-                            anyInstalled && anyFile -> "Ready to play"
-                            anyInstalled -> "Installed"
-                            anyFile -> "File matched"
-                            else -> "Not installed"
-                        })
-                        val fileText = when {
-                            anyFile -> "File on device"
-                            hasCloudFile -> "File in cloud"
-                            else -> null
-                        }
-                        if (fileText != null) {
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Surface(
-                                color = MaterialTheme.colorScheme.secondaryContainer,
-                                shape = MaterialTheme.shapes.small
-                            ) {
-                                Text(
-                                    text = fileText,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    modifier = Modifier.padding(
-                                        horizontal = 8.dp,
-                                        vertical = 4.dp
-                                    )
-                                )
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (firstInstalled != null) {
-                            Button(onClick = { onPlay(firstInstalled.id) }) {
-                                Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Play")
-                            }
-                        }
-                        OutlinedButton(onClick = { onOpenGame(selectedGame.key) }) {
-                            Text("View game")
-                        }
+                    // The X: closes the detail pane; the grid expands
+                    // from 3 wide to 5 wide. Selecting a game reopens it.
+                    IconButton(
+                        onClick = { detailOpen = false },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(8.dp)
+                            .background(
+                                Color.Black.copy(alpha = 0.6f),
+                                CircleShape
+                            )
+                    ) {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "Close details",
+                            tint = Color.White
+                        )
                     }
                 }
             }
         }
+    }
+}
+
+/**
+ * One card in the unfolded game grid: the game's cover art, portrait,
+ * filling the grid column, with its title and platform underneath.
+ * Mirrors [GameSpine] (the folded shelf), but fluid-width instead of
+ * a fixed 112dp. The selected card carries a lime outline; a game
+ * with any port installed carries a small lime play mark on the cover.
+ */
+@Composable
+private fun GameGridCard(
+    game: GameEntry,
+    selected: Boolean,
+    isInstalled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier) {
+        Card(
+            onClick = onClick,
+            modifier = Modifier.fillMaxWidth().aspectRatio(112f / 160f),
+            shape = RoundedCornerShape(8.dp),
+            border = if (selected) {
+                BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+            } else {
+                null
+            },
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                if (game.coverArtUrl.isNotBlank()) {
+                    AsyncImage(
+                        model = game.coverArtUrl,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = game.title.take(1),
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                if (isInstalled) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(6.dp)
+                            .size(24.dp)
+                            .background(
+                                Color.Black.copy(alpha = 0.6f),
+                                CircleShape
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Filled.PlayArrow,
+                            contentDescription = "Installed",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = game.title,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = game.platform,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -832,85 +1117,6 @@ private fun GameSpine(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
-        )
-    }
-}
-
-/**
- * The unfolded console rail: the platforms as a vertical list, like
- * the concept's left rail. The selected platform gets a lime bar and
- * lime text. Folded, the same options are the sideways-scrolling
- * chip row in GameList.
- */
-@Composable
-private fun PlatformRail(
-    platformOptions: List<Pair<String, String>>,
-    selectedPlatform: String,
-    onPlatformChange: (String) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Column(
-        modifier = modifier
-            .fillMaxHeight()
-            .width(168.dp)
-            .padding(vertical = 8.dp)
-    ) {
-        Text(
-            text = "CONSOLES",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-        )
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
-            item {
-                PlatformRailRow(
-                    label = "All",
-                    selected = selectedPlatform.isEmpty(),
-                    onClick = { onPlatformChange("") }
-                )
-            }
-            items(platformOptions, key = { it.first }) { (id, name) ->
-                PlatformRailRow(
-                    label = name,
-                    selected = selectedPlatform == id,
-                    onClick = { onPlatformChange(id) }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun PlatformRailRow(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .width(3.dp)
-                .height(40.dp)
-                .background(
-                    if (selected) MaterialTheme.colorScheme.primary
-                    else Color.Transparent
-                )
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (selected) MaterialTheme.colorScheme.primary
-            else MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier
-                .weight(1f)
-                .padding(horizontal = 12.dp, vertical = 10.dp)
         )
     }
 }
