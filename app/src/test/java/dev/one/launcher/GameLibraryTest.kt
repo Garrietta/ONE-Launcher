@@ -888,6 +888,59 @@ class GameLibraryTest {
         platformName = "Wii"
     )
 
+    // Mirrors the live Recompa catalog entry for .hack//versus
+    // (joseflores-dev/dot-hack-versus-port, PS3): one asset with
+    // accepted: [], so it has no formats and matches by name only.
+    // Hints and distinctive hints are exactly as hintsFromGameTitle /
+    // withDistinctiveHints produce against the 2026-11-16 index —
+    // hardcoded here (do NOT use withDistinctiveHints on a
+    // single-port list, which would wrongly mark "port" distinctive).
+    // The v1.8.5 regression: titleWords stripped the "//" as a
+    // path prefix, so the game tokenized to just ["versus"] and
+    // every "versus" file matched.
+    private val hackVersus = Port(
+        id = "dot-hack-versus-port",
+        title = ".hack//versus",
+        game = ".hack//versus",
+        system = "PlayStation 3",
+        type = "recomp",
+        repo = "joseflores-dev/dot-hack-versus-port",
+        releasesUrl = "https://github.com/joseflores-dev/dot-hack-versus-port/releases",
+        fileExtensions = emptyList(),
+        fileNameHints = listOf("hack", "versus", "dot", "port"),
+        requiredDump = "Your own .hack//Versus game dump.",
+        distinctiveNameHints = listOf("hack", "versus"),
+        platformId = "ps3",
+        platformName = "PlayStation 3"
+    )
+
+    // Mirrors the live Recompa catalog entry for 007: Nightfire and
+    // 007: Agent Under Fire (papand7/nightfire-recomp, Xbox): one
+    // asset with accepted: [], so it has no formats and matches by
+    // name only. Hints and distinctive hints are exactly as
+    // hintsFromGameTitle / withDistinctiveHints produce against the
+    // 2026-11-16 index ("007", "agent" and "fire" are shared with
+    // other 007 ports; "nightfire" and "under" belong to this port
+    // alone). The v1.8.5 magnet-dedup fixture: remote.json lists
+    // "007 - Agent Under Fire (USA).zip" and "007 - Nightfire
+    // (USA).zip" once per system (Xbox, GameCube, PS2), so the same
+    // name arrives three times.
+    private val nightfire = Port(
+        id = "nightfire-recomp",
+        title = "007: Nightfire and 007: Agent Under Fire",
+        game = "007: Nightfire and 007: Agent Under Fire",
+        system = "Xbox",
+        type = "recomp",
+        repo = "papand7/nightfire-recomp",
+        releasesUrl = "https://github.com/papand7/nightfire-recomp/releases",
+        fileExtensions = emptyList(),
+        fileNameHints = listOf("007", "nightfire", "agent", "under", "fire", "recomp"),
+        requiredDump = "Your own 007: Nightfire / Agent Under Fire game dump.",
+        distinctiveNameHints = listOf("nightfire", "under"),
+        platformId = "xbox",
+        platformName = "Xbox"
+    )
+
     @Test
     fun filterGamesByQueryAndPlatform() {
         val games = groupPortsByGame(listOf(eidos, pokopia, soh, twoShip))
@@ -1356,16 +1409,25 @@ class GameLibraryTest {
     // torrent's infohash (ae3e64f1…), the game name as dn, and the
     // file's &so= index inside that torrent. The dn is built from
     // the name so the entry is faithful; matching reads the name,
-    // never the URL.
-    private fun magnetEntry(name: String, soIndex: Int): RemoteEntry =
+    // never the URL. The optional category is the feed's category
+    // for the entry (v1.8.5 magnet dedup); each system torrent gets
+    // a different infohash so same-name entries from different
+    // systems are distinct URLs.
+    private fun magnetEntry(
+        name: String,
+        soIndex: Int,
+        category: String? = null,
+        infohash: String = "ae3e64f1d5ff936fe5027a14216453101a0ddbfa"
+    ): RemoteEntry =
         RemoteEntry(
             name = name,
-            url = "magnet:?xt=urn:btih:ae3e64f1d5ff936fe5027a14216453101a0ddbfa" +
+            url = "magnet:?xt=urn:btih:$infohash" +
                 "&dn=" + java.net.URLEncoder.encode(name, "UTF-8") +
                 "&tr=udp://tracker.opentrackr.org:1337/announce" +
                 "&so=$soIndex",
             isFolder = false,
-            kind = "magnet"
+            kind = "magnet",
+            category = category
         )
 
     @Test
@@ -1570,6 +1632,183 @@ class GameLibraryTest {
         assertEquals(1, magnets[pokeparkGame.key]!!.size)
         assertFalse(magnets.containsKey(eidosGame.key))
         assertFalse(magnets.containsKey(pokopiaGame.key))
+    }
+
+    // ---- .hack//versus false positives (v1.8.5) ----
+    //
+    // Garrett's 2026-11-16 report: the .hack//versus game page
+    // showed "Aliens Versus Predator - Extinction", "RoboCop versus
+    // The Terminator", "Sherlock Holmes Versus Jack the Ripper" and
+    // "Star Versus" as magnet links, all "json · name only". The
+    // game title ".hack//versus" was tokenized to just ["versus"]
+    // (the "//" was stripped as a file-path prefix), so every file
+    // containing "versus" got similarity 1.0 and matched through the
+    // distinctive hint. The fix tokenizes the game title fully.
+
+    @Test
+    fun hackVersusDoesNotMatchEveryVersusGame() {
+        val versusFiles = listOf(
+            "Aliens Versus Predator - Extinction (USA).zip",
+            "RoboCop versus The Terminator (USA).zip",
+            "Sherlock Holmes Versus Jack the Ripper (USA) (En,Fr,Es).zip",
+            "Star Versus (USA, Europe) (Aftermarket) (Unl).zip"
+        )
+        // As magnets: none of the four matches.
+        val sources = listOf(
+            "json" to versusFiles.mapIndexed { i, name -> magnetEntry(name, 300 + i) }
+        )
+        assertTrue(matchMagnetLinksForGame(sources, listOf(hackVersus)).isEmpty())
+        // As downloadable files: none of the four matches either.
+        for (name in versusFiles) {
+            assertNull(
+                "downloadable $name must not match .hack//versus",
+                PortMatcher.matchKind(name, hackVersus)
+            )
+        }
+        // A real .hack file still matches (downloadable, NAME_ONLY).
+        assertEquals(
+            MatchKind.NAME_ONLY,
+            PortMatcher.matchKind(".hack//Versus (USA).iso", hackVersus)
+        )
+        assertEquals(
+            MatchKind.NAME_ONLY,
+            PortMatcher.matchKind(".hack//Versus (Japan).iso", hackVersus)
+        )
+    }
+
+    // ---- Magnet dedup by name (v1.8.5) ----
+    //
+    // Garrett's 2026-11-16 report: the same game file name appears
+    // 2–3 times on a game page — remote.json lists it once per
+    // system (each system is its own torrent, so the magnet URLs
+    // differ). The app deduped by URL only, so the same name showed
+    // multiple times. Magnets are now deduped by cleaned name per
+    // game, keeping the entry whose category platform matches the
+    // game's platform, else the first.
+
+    @Test
+    fun magnetDedupPrefersMatchingPlatform() {
+        // "007 - Agent Under Fire (USA).zip" and "007 - Nightfire
+        // (USA).zip" each arrive three times — Xbox, GameCube, PS2 —
+        // with a different magnet URL per system torrent. The 007
+        // game is an Xbox port, so the Xbox entry wins for both.
+        val xboxHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        val gcHash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        val ps2Hash = "cccccccccccccccccccccccccccccccccccccccc"
+        val sources = listOf(
+            "json" to listOf(
+                magnetEntry(
+                    "007 - Agent Under Fire (USA).zip", 10,
+                    category = "Microsoft - Xbox", infohash = xboxHash
+                ),
+                magnetEntry(
+                    "007 - Agent Under Fire (USA).zip", 11,
+                    category = "Nintendo - GameCube - NKit RVZ [zstd-19-128k]",
+                    infohash = gcHash
+                ),
+                magnetEntry(
+                    "007 - Agent Under Fire (USA).zip", 12,
+                    category = "Sony - PlayStation 2", infohash = ps2Hash
+                ),
+                magnetEntry(
+                    "007 - Nightfire (USA).zip", 20,
+                    category = "Microsoft - Xbox", infohash = xboxHash
+                ),
+                magnetEntry(
+                    "007 - Nightfire (USA).zip", 21,
+                    category = "Nintendo - GameCube - NKit RVZ [zstd-19-128k]",
+                    infohash = gcHash
+                ),
+                magnetEntry(
+                    "007 - Nightfire (USA).zip", 22,
+                    category = "Sony - PlayStation 2", infohash = ps2Hash
+                )
+            )
+        )
+        val magnets = matchMagnetLinksForGame(sources, listOf(nightfire))
+        assertEquals(2, magnets.size)
+        val auf = magnets.single { it.name.startsWith("007 - Agent Under Fire") }
+        val nightfireLink = magnets.single { it.name.startsWith("007 - Nightfire") }
+        assertTrue(auf.magnetUrl.contains(xboxHash))
+        assertTrue(nightfireLink.magnetUrl.contains(xboxHash))
+        assertTrue(magnets.all { it.kind == MatchKind.NAME_ONLY })
+        assertTrue(magnets.all { it.portId == "nightfire-recomp" })
+    }
+
+    @Test
+    fun magnetDedupTwoCategoriesShowsOnce() {
+        // The same name from two categories shows once. Here neither
+        // category matches the game's platform (GameCube + PS2 for an
+        // Xbox game), so the first in feed order wins.
+        val gcHash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        val ps2Hash = "cccccccccccccccccccccccccccccccccccccccc"
+        val sources = listOf(
+            "json" to listOf(
+                magnetEntry(
+                    "007 - Agent Under Fire (USA).zip", 11,
+                    category = "Nintendo - GameCube - NKit RVZ [zstd-19-128k]",
+                    infohash = gcHash
+                ),
+                magnetEntry(
+                    "007 - Agent Under Fire (USA).zip", 12,
+                    category = "Sony - PlayStation 2", infohash = ps2Hash
+                )
+            )
+        )
+        val magnets = matchMagnetLinksForGame(sources, listOf(nightfire))
+        assertEquals(1, magnets.size)
+        assertTrue(magnets.single().magnetUrl.contains(gcHash))
+    }
+
+    @Test
+    fun mergeLiveAndCachedMagnetsDedupesStaleCacheDuplicates() {
+        // A stale v1.8.4 cache carries the same magnet name two or
+        // three times (one per platform), because v1.8.4 deduped by
+        // URL only. The merge collapses it on display even before
+        // the first background refresh overwrites the cache: a live
+        // link wins a name clash, and a cached duplicate only fills
+        // a gap the live list has not produced.
+        val live = listOf(
+            GameMagnetLink(
+                name = "007 - Agent Under Fire (USA).zip",
+                magnetUrl = "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&so=10",
+                kind = MatchKind.NAME_ONLY,
+                portId = "nightfire-recomp",
+                where = "json"
+            )
+        )
+        val cached = listOf(
+            GameMagnetLink(
+                name = "007 - Agent Under Fire (USA).zip",
+                magnetUrl = "magnet:?xt=urn:btih:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&so=11",
+                kind = MatchKind.NAME_ONLY,
+                portId = "nightfire-recomp",
+                where = "json"
+            ),
+            GameMagnetLink(
+                name = "007 - Agent Under Fire (USA).zip",
+                magnetUrl = "magnet:?xt=urn:btih:cccccccccccccccccccccccccccccccccccccccc&so=12",
+                kind = MatchKind.NAME_ONLY,
+                portId = "nightfire-recomp",
+                where = "json"
+            ),
+            GameMagnetLink(
+                name = "007 - Nightfire (USA).zip",
+                magnetUrl = "magnet:?xt=urn:btih:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&so=21",
+                kind = MatchKind.NAME_ONLY,
+                portId = "nightfire-recomp",
+                where = "json"
+            )
+        )
+        val merged = mergeLiveAndCachedMagnets(live, cached)
+        assertEquals(2, merged.size)
+        // The live Xbox link wins the "Agent Under Fire" name clash.
+        assertTrue(
+            merged.single { it.name.startsWith("007 - Agent Under Fire") }
+                .magnetUrl.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        )
+        // The cached Nightfire link fills the gap (no live copy).
+        assertEquals(1, merged.count { it.name.startsWith("007 - Nightfire") })
     }
 }
 

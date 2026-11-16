@@ -1,5 +1,6 @@
 package dev.one.launcher.data
 
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -40,13 +41,27 @@ import java.util.concurrent.TimeUnit
  * tapping it copies the magnet URI (its `url`, a full magnet: URI),
  * it never downloads and never matches a game. `kind` is null for
  * autoindex entries and for plain file entries that do not carry it.
+ *
+ * `category` (v1.8.5) is the feed's category for the entry (e.g.
+ * "Nintendo - Wii - NKit RVZ [zstd-19-128k]" for a Minerva magnet,
+ * "Microsoft - Xbox" for an Xbox one) — the JSON lists carry it and
+ * the parser keeps it so magnet dedup can prefer the entry whose
+ * category platform matches the game's platform. Null for autoindex
+ * entries (a directory listing has no categories) and for feeds
+ * that do not carry one.
+ *
+ * RemoteEntry is @Serializable so the parsed listings can be cached
+ * to disk (v1.8.5, [RemoteListingsCache]) — the computed `isMagnet`
+ * is derived from `kind`/`url` and is not part of the stored form.
  */
+@Serializable
 data class RemoteEntry(
     val name: String,
     val url: String,
     val isFolder: Boolean,
     val sizeBytes: Long? = null,
-    val kind: String? = null
+    val kind: String? = null,
+    val category: String? = null
 ) {
     /**
      * True for a magnet entry: the JSON said kind "magnet", or the
@@ -281,14 +296,15 @@ fun parseDirectoryListing(baseUrl: String, html: String): List<RemoteEntry> {
 /**
  * Parse a plain JSON file list: an array of objects with `name` and
  * `url` (both required strings). An entry may also carry an optional
- * `kind` ("magnet" or "file"; absent means "file") and an optional
- * numeric `size`. Unknown fields are ignored; an entry missing a
- * required field is skipped, never crashed on. Anything that is not
- * such an array — a JSON object (e.g. a categories[] catalog), a
- * malformed document, or an array whose entries carry no usable
- * name/url (e.g. the flat items[] schema with title/downloadUrl) — is
- * rejected with the plain error, not interpreted as a file list. Pure
- * function — unit-tested.
+ * `kind` ("magnet" or "file"; absent means "file"), an optional
+ * numeric `size`, and an optional `category` string (kept as-is).
+ * Unknown fields are ignored; an entry missing a required field is
+ * skipped, never crashed on. Anything that is not such an array — a
+ * JSON object (e.g. a categories[] catalog), a malformed document, or
+ * an array whose entries carry no usable name/url (e.g. the flat
+ * items[] schema with title/downloadUrl) — is rejected with the
+ * plain error, not interpreted as a file list. Pure function —
+ * unit-tested.
  *
  * Magnet entries (v1.8.0): a magnet entry's `url` is its full
  * magnet: URI, used as-is (it is already absolute — it is never
@@ -328,6 +344,17 @@ fun parsePlainFileList(feedUrl: String, rawJson: String): RemoteListingResult {
         } else {
             null
         }
+        // Optional category, when the list carries one (the adapter's
+        // remote.json does — the Minerva system name, e.g. "Nintendo
+        // - Wii - NKit RVZ [zstd-19-128k]", or an r-roms category).
+        // Kept so magnet dedup can prefer the entry whose category
+        // platform matches the game's platform (v1.8.5).
+        val categoryPrimitive = item["category"] as? JsonPrimitive
+        val category = if (categoryPrimitive?.isString == true) {
+            categoryPrimitive.content.takeIf { it.isNotBlank() }?.trim()
+        } else {
+            null
+        }
         // Optional numeric size, when the list carries one; anything
         // else (missing, a string, a negative) means "unknown".
         // JsonPrimitive has no longOrNull in kotlinx-serialization
@@ -341,7 +368,7 @@ fun parsePlainFileList(feedUrl: String, rawJson: String): RemoteListingResult {
         }
         RemoteEntry(
             name = name, url = resolved, isFolder = false,
-            sizeBytes = size, kind = kind
+            sizeBytes = size, kind = kind, category = category
         )
     }
     if (entries.isEmpty()) return RemoteListingResult.Error(REMOTE_FOLDER_ERROR)

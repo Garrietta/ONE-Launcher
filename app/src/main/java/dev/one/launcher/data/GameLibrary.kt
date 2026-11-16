@@ -229,11 +229,55 @@ data class GameMagnetLink(
  * These are display-only copy links: they never enter "Your files"
  * or "Has files" — see [matchServerFilesForGame].
  */
+/**
+ * One magnet entry matched to one of a game's ports, before the
+ * name-dedup (v1.8.5). Carries the source name so the deduped link
+ * keeps the feed it came from.
+ */
+data class MagnetMatch(
+    val entry: RemoteEntry,
+    val port: Port,
+    val kind: MatchKind,
+    val sourceName: String
+)
+
+/**
+ * Deduplicate one game's magnet matches by cleaned name (v1.8.5):
+ * the same game file is listed once per system in the feed (each
+ * system is its own torrent), so the same name arrives two or three
+ * times with different magnet URLs — "007 - Agent Under Fire
+ * (USA).zip" from Microsoft - Xbox, Nintendo - GameCube and Sony -
+ * PlayStation 2. Keep the entry whose category platform matches the
+ * matched port's platform — the right file for this port — and
+ * otherwise the first in feed order. The cleaned name is the
+ * diacritic-folded lowercase name, so "Pokémon" and "Pokemon"
+ * collapse. Pure function — unit-tested.
+ */
+fun dedupeMagnetLinks(
+    candidates: List<MagnetMatch>
+): List<MagnetMatch> {
+    return candidates
+        .withIndex()
+        .groupBy { normalizeForTokens(it.value.entry.name) }
+        .values
+        .map { same ->
+            same.minWith(
+                compareBy<IndexedValue<MagnetMatch>> { indexed ->
+                    val candidate = indexed.value
+                    val platformMatches =
+                        CategoryPlatform.platformIdForCategory(candidate.entry.category) ==
+                            candidate.port.platformId
+                    if (platformMatches) 0 else 1
+                }.thenBy { it.index }
+            ).value
+        }
+}
+
 fun matchMagnetLinksForGame(
     sources: List<Pair<String, List<RemoteEntry>>>,
     ports: List<Port>
 ): List<GameMagnetLink> {
-    val out = mutableListOf<GameMagnetLink>()
+    val candidates = mutableListOf<MagnetMatch>()
     val seenUrls = mutableSetOf<String>()
     for ((sourceName, entries) in sources) {
         for (entry in entries) {
@@ -242,19 +286,31 @@ fun matchMagnetLinksForGame(
             val match = ports.firstNotNullOfOrNull { port ->
                 PortMatcher.matchMagnetKind(entry, port)?.let { port to it }
             } ?: continue
-            out.add(
-                GameMagnetLink(
-                    name = entry.name,
-                    magnetUrl = entry.url,
+            candidates.add(
+                MagnetMatch(
+                    entry = entry,
+                    port = match.first,
                     kind = match.second,
-                    portId = match.first.id,
-                    where = sourceName,
-                    remoteSourceName = sourceName
+                    sourceName = sourceName
                 )
             )
         }
     }
-    return out.sortedBy { it.name.lowercase() }
+    // One link per cleaned name (v1.8.5): the same game file listed
+    // once per system collapses to the entry whose category platform
+    // matches the game's platform, else the first.
+    return dedupeMagnetLinks(candidates)
+        .map { candidate ->
+            GameMagnetLink(
+                name = candidate.entry.name,
+                magnetUrl = candidate.entry.url,
+                kind = candidate.kind,
+                portId = candidate.port.id,
+                where = candidate.sourceName,
+                remoteSourceName = candidate.sourceName
+            )
+        }
+        .sortedBy { it.name.lowercase() }
 }
 
 /**
@@ -376,7 +432,12 @@ fun mergeLiveAndCachedFiles(
  * (v1.8.4): the same immediate-from-cache rule as
  * [mergeLiveAndCachedFiles], keyed on the magnet URI (a magnet's
  * name can repeat across regions; the URI is the identity). Live
- * links win on a URI clash; cached links only fill gaps.
+ * links win on a URI clash; cached links only fill gaps. The result
+ * is also deduped by cleaned name (v1.8.5): a stale v1.8.4 cache
+ * carries the same name two or three times (one per platform), so
+ * the merge collapses it on display even before the first
+ * background refresh overwrites the cache — a live link wins a
+ * name clash, since the live list comes first.
  */
 fun mergeLiveAndCachedMagnets(
     live: List<GameMagnetLink>,
@@ -384,7 +445,11 @@ fun mergeLiveAndCachedMagnets(
 ): List<GameMagnetLink> {
     val liveUrls = live.map { it.magnetUrl }.toSet()
     val extra = cached.filter { it.magnetUrl !in liveUrls }
-    return (live + extra).sortedBy { it.name.lowercase() }
+    return (live + extra)
+        .groupBy { normalizeForTokens(it.name) }
+        .values
+        .map { it.first() }
+        .sortedBy { it.name.lowercase() }
 }
 
 // ---- Star ranking ----

@@ -1,5 +1,64 @@
 # Changelog
 
+## v1.8.5 — 2026-11-16
+
+Matching robustness and loading performance. Three reports from
+Garrett, all in one round.
+
+**`.hack//versus` matched every "versus" game.** The game page
+showed "Aliens Versus Predator - Extinction", "RoboCop versus The
+Terminator", "Sherlock Holmes Versus Jack the Ripper" and "Star
+Versus" as magnet links, all "json · name only". The cause was in
+`titleWords`: it stripped a file-path prefix with
+`substringAfterLast('/')`, which also stripped the game title
+".hack//versus" down to just "versus" — so every file containing
+"versus" got title similarity 1.0 and matched through the
+distinctive hint. A "/" in a game title is part of the title now;
+only the file side strips a path prefix. The four "versus" files
+are blocked at similarity 0.5, a real ".hack//Versus (USA).iso"
+still matches (1.0, NAME_ONLY), and the other slash titles —
+Kingdom Hearts 358/2 Days, The Void/Tension, Stronghold Crusader
+HD / Extreme HD — tokenize fully. Verified over the full merged
+catalog: no true positive lost (Eidos → Pokemon Black, Pokopia →
+.nup, SoH → OoT .z64, PokePark Wii USA magnet, 007 → the 007 Xbox
+game), and .hack//versus matches zero magnets. One known side
+effect of the symmetric-overlap gate: "Kingdom Hearts (USA).zip"
+and "Kingdom Hearts II (USA).zip" now match KH 358/2 Days (their
+titles are subsets of the game's title, similarity 1.0) — same
+franchise, and no KH1/KH2 port exists, so they have no other port
+to match; the same class of ambiguity as the documented Eidos /
+Pokemon Black 2 case.
+
+**Duplicate magnet links.** The same game file name appeared 2–3
+times on a game page — remote.json lists it once per system (each
+system is its own torrent, so the magnet URLs differ) and the app
+deduped by URL only. Magnet links are now deduped by cleaned name
+per game, keeping the entry whose feed category platform matches
+the game's platform (the category string encodes the system, e.g.
+"Microsoft - Xbox", "Nintendo - GameCube - NKit RVZ
+[zstd-19-128k]"), else the first. "007 - Agent Under Fire
+(USA).zip" and "007 - Nightfire (USA).zip" each appear once, the
+Xbox one. The merge also dedupes by name, so a stale v1.8.4 cache
+(which carries the pre-dedup duplicates) collapses on display
+before the first background refresh overwrites it. Downloadable
+files were already deduped by name; magnets get the same
+treatment. The pairing cache format is unchanged (version 1).
+
+**Loading takes way too long.** The app re-fetched + re-parsed
+the Recompa catalog (5.5 MB) and remote.json (11 MB, 26,710
+records) on every cold start, and pairing only started once the
+network landed. Both are now cached on disk and served first: the
+parsed catalog (the merged port list, ready to display) and each
+remote folder's parsed entries load from the app cache dir on
+startup, so the Library and a game page show immediately from
+cache; the catalog and remote.json still refresh in the background
+and update the UI when the new data lands. A fetch that fails
+leaves the cached entries in place — the list is never overwritten
+with an empty list — so a game page keeps showing its cached
+files and magnets while offline. The pairing cache (v1.8.2) is
+unchanged. Cover art is out of scope here: Coil's disk cache
+already handles repeat loads.
+
 ## v1.8.4 — 2026-11-16
 
 Freeze/ANR fix and the ARCHIVE_PROVISIONAL tightening. The v1.8.3

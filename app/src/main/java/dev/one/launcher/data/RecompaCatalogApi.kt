@@ -1,8 +1,12 @@
 package dev.one.launcher.data
 
 import android.content.Context
+import dev.one.launcher.model.Port
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -25,6 +29,7 @@ class RecompaCatalogApi(private val context: Context) {
     companion object {
         const val INDEX_URL = "https://recompa.app/index.json"
         const val CACHE_FILE = "recompa-index.json"
+        const val PARSED_CACHE_FILE = "recompa-parsed.json"
     }
 
     private fun cacheFile(): File = File(context.cacheDir, CACHE_FILE)
@@ -64,4 +69,61 @@ class RecompaCatalogApi(private val context: Context) {
             null
         }
     }
+
+    // ---- Parsed catalog cache (v1.8.5) ----
+    //
+    // The raw-JSON cache above still costs a full re-parse + re-map of
+    // the 5.5 MB index on every cold start (hundreds of milliseconds
+    // to seconds on a phone). The parsed cache stores the MERGED port
+    // list — curated ports + catalog forks + cover art, exactly what
+    // the Library displays — so a cold start can show all 529 games
+    // without touching the network or re-parsing the index. The
+    // background refresh re-parses + re-maps and overwrites this
+    // cache; the raw JSON stays as the fallback when the parsed cache
+    // is absent or corrupt.
+
+    private fun parsedCacheFile(): File = File(context.cacheDir, PARSED_CACHE_FILE)
+
+    private val parsedJson = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    }
+
+    /** The last merged catalog, or null when never saved / corrupt. */
+    fun loadParsedCached(): CachedCatalog? {
+        val file = parsedCacheFile()
+        if (!file.isFile) return null
+        return try {
+            parsedJson.decodeFromString<CachedCatalog>(file.readText())
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Persist the merged catalog. Best-effort — never throws. */
+    fun saveParsed(cached: CachedCatalog) {
+        try {
+            parsedCacheFile().writeText(parsedJson.encodeToString(cached))
+        } catch (e: Exception) {
+            // Cache write is best-effort; the in-memory data is still good.
+        }
+    }
 }
+
+/**
+ * The merged catalog as the Library displays it (v1.8.5): the full
+ * merged [Port] list (curated first, then catalog ports, with
+ * distinctive hints already computed), the catalog's platform list,
+ * and the index's generated_at so the UI can say when it was
+ * updated. Stored by [RecompaCatalogApi.saveParsed] and read by
+ * [RecompaCatalogApi.loadParsedCached]. [Port] is @Serializable, so
+ * the list round-trips; a field added later decodes with its
+ * default (ignoreUnknownKeys + encodeDefaults), so an older cache
+ * still loads after an app update.
+ */
+@Serializable
+data class CachedCatalog(
+    val ports: List<Port>,
+    val platforms: List<RecompaPlatform> = emptyList(),
+    val generatedAt: String = ""
+)

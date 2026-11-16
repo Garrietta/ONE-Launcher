@@ -11,6 +11,7 @@ import dev.one.launcher.data.mapCatalogPort
 import dev.one.launcher.data.mergeCatalogs
 import dev.one.launcher.data.parseRecompaIndex
 import dev.one.launcher.data.titleSimilarity
+import dev.one.launcher.data.titleWords
 import dev.one.launcher.data.withDistinctiveHints
 import dev.one.launcher.model.Port
 import org.junit.Assert.assertEquals
@@ -421,6 +422,74 @@ class RecompaCatalogTest {
             titleSimilarity(
                 "Dr. Robotnik's Ring Racers.zip", "Dr. Robotnik's Ring Racers"
             ),
+            0.001
+        )
+    }
+
+    @Test
+    fun slashInGameTitleIsNotAPathPrefix() {
+        // The .hack//versus false positives (v1.8.5, Garrett's
+        // 2026-11-16 report): titleWords stripped a file-path prefix
+        // with substringAfterLast('/'), which also stripped the game
+        // title ".hack//versus" down to just "versus" — so every
+        // "versus" file got similarity 1.0 and matched. A "/" in a
+        // game title is part of the title; only the FILE side strips
+        // a path prefix.
+        assertEquals(listOf("hack", "versus"), titleWords(".hack//versus"))
+        assertEquals(
+            listOf("kingdom", "hearts", "358", "days"),
+            titleWords("Kingdom Hearts 358/2 Days")
+        )
+        assertEquals(listOf("void", "tension"), titleWords("The Void/Tension"))
+        // The four reported "versus" files are now blocked at 0.5.
+        assertEquals(
+            0.5,
+            titleSimilarity(
+                "Aliens Versus Predator - Extinction (USA).zip", ".hack//versus"
+            ),
+            0.001
+        )
+        assertEquals(
+            0.5,
+            titleSimilarity(
+                "RoboCop versus The Terminator (USA).zip", ".hack//versus"
+            ),
+            0.001
+        )
+        assertEquals(
+            0.5,
+            titleSimilarity(
+                "Sherlock Holmes Versus Jack the Ripper (USA) (En,Fr,Es).zip",
+                ".hack//versus"
+            ),
+            0.001
+        )
+        assertEquals(
+            0.5,
+            titleSimilarity(
+                "Star Versus (USA, Europe) (Aftermarket) (Unl).zip", ".hack//versus"
+            ),
+            0.001
+        )
+        // A real .hack file still matches: the file side strips its
+        // path prefix, the game side keeps both words, and the
+        // symmetric overlap is 1.0.
+        assertEquals(
+            1.0,
+            titleSimilarity(".hack//Versus (USA).iso", ".hack//versus"),
+            0.001
+        )
+        // The other slash titles tokenize fully and still match.
+        assertEquals(
+            1.0,
+            titleSimilarity(
+                "Kingdom Hearts 358/2 Days (USA).zip", "Kingdom Hearts 358/2 Days"
+            ),
+            0.001
+        )
+        assertEquals(
+            1.0,
+            titleSimilarity("The Void - Tension (USA).zip", "The Void/Tension"),
             0.001
         )
     }

@@ -13,6 +13,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import dev.one.launcher.data.CachedCatalog
 import dev.one.launcher.data.CustomLink
 import dev.one.launcher.data.CustomLinksStore
 import dev.one.launcher.data.DetectedFile
@@ -56,6 +57,7 @@ import dev.one.launcher.data.RemoteFolderCredentials
 import dev.one.launcher.data.RemoteFolderSource
 import dev.one.launcher.data.RemoteFoldersStore
 import dev.one.launcher.data.RemoteListingResult
+import dev.one.launcher.data.RemoteListingsCache
 import dev.one.launcher.data.SecureKeyStore
 import dev.one.launcher.data.StarCacheStore
 import dev.one.launcher.data.StarEntry
@@ -531,6 +533,11 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     private val remoteFoldersStore = RemoteFoldersStore(application)
     private val remoteCredentials = RemoteFolderCredentials(application)
     private val remoteDirectoryApi = RemoteDirectoryApi()
+    /** On-disk cache for parsed remote listings (v1.8.5): a cold start
+     *  serves the cached entries immediately and refreshes in the
+     *  background, instead of re-fetching + re-parsing remote.json
+     *  (11 MB) before anything can match. */
+    private val remoteListingsCache = RemoteListingsCache(application.cacheDir)
 
     /** The source currently open in the remote browser, if any. */
     private var remoteSource: RemoteFolderSource? = null
@@ -808,8 +815,60 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
         val platformNames = index.platforms.associate { it.id to it.name }
         val catalogPorts = index.ports.map { mapCatalogPort(it, platformNames[it.original_platform].orEmpty()) }
         val merge = mergeCatalogs(curatedPorts, catalogPorts)
-        _ports.value = merge.merged
-        _games.value = groupPortsByGame(merge.merged)
+        applyMergedPorts(
+            merged = merge.merged,
+            platforms = index.platforms,
+            generatedAt = index.generated_at,
+            fromCache = fromCache,
+            unmatchedCuratedIds = merge.unmatchedCuratedIds,
+            portsWithoutFileInfo = merge.portsWithoutFileInfo
+        )
+        // Persist the merged list so the next cold start can skip the
+        // re-parse + re-map entirely (v1.8.5 parsed catalog cache).
+        viewModelScope.launch(Dispatchers.IO) {
+            recompaApi.saveParsed(
+                CachedCatalog(
+                    ports = merge.merged,
+                    platforms = index.platforms,
+                    generatedAt = index.generated_at
+                )
+            )
+        }
+    }
+
+    /**
+     * Apply a previously merged catalog from the parsed cache
+     * (v1.8.5): the merged port list is already in display form, so
+     * the Library shows all 529 games immediately on cold start
+     * without re-parsing the 5.5 MB index or re-mapping it. The
+     * background refresh still re-parses and overwrites this cache.
+     */
+    private fun applyParsedCatalog(cached: CachedCatalog) {
+        applyMergedPorts(
+            merged = cached.ports,
+            platforms = cached.platforms,
+            generatedAt = cached.generatedAt,
+            fromCache = true,
+            unmatchedCuratedIds = emptyList(),
+            portsWithoutFileInfo = emptyList()
+        )
+    }
+
+    /**
+     * Set the Library state from a merged port list — shared by
+     * [applyCatalog] (freshly merged) and [applyParsedCatalog]
+     * (loaded from the parsed cache).
+     */
+    private fun applyMergedPorts(
+        merged: List<Port>,
+        platforms: List<RecompaPlatform>,
+        generatedAt: String,
+        fromCache: Boolean,
+        unmatchedCuratedIds: List<String>,
+        portsWithoutFileInfo: List<String>
+    ) {
+        _ports.value = merged
+        _games.value = groupPortsByGame(merged)
         // A selected game that no longer exists (catalog changed)
         // falls back to the first game.
         if (_selectedGameKey.value != null &&
@@ -817,13 +876,13 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
         ) {
             _selectedGameKey.value = null
         }
-        _catalogPlatforms.value = index.platforms
+        _catalogPlatforms.value = platforms
         _catalogState.value = CatalogState.Ready(
-            portCount = merge.merged.size,
-            generatedAt = index.generated_at,
+            portCount = merged.size,
+            generatedAt = generatedAt,
             fromCache = fromCache,
-            unmatchedCuratedIds = merge.unmatchedCuratedIds,
-            portsWithoutFileInfo = merge.portsWithoutFileInfo
+            unmatchedCuratedIds = unmatchedCuratedIds,
+            portsWithoutFileInfo = portsWithoutFileInfo
         )
         rebuildStatuses()
         scanLocalFolder()
@@ -831,15 +890,27 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Cached index first (cold start), then a background network refresh. */
     private suspend fun loadCatalog() {
-        val cached = withContext(Dispatchers.IO) { recompaApi.loadCached() }
-        if (cached != null) applyCatalog(cached, fromCache = true)
+        // The parsed cache is the fastest path: the merged port list
+        // is already in display form, so the Library shows all 529
+        // games immediately. Fall back to the raw JSON cache when
+        // there is no parsed cache yet (first run after the update).
+        val parsed = withContext(Dispatchers.IO) { recompaApi.loadParsedCached() }
+        if (parsed != null) {
+            applyParsedCatalog(parsed)
+        } else {
+            val cached = withContext(Dispatchers.IO) { recompaApi.loadCached() }
+            if (cached != null) applyCatalog(cached, fromCache = true)
+        }
         val fresh = recompaApi.refresh()
         if (fresh != null) {
             applyCatalog(fresh, fromCache = false)
-        } else if (cached == null) {
-            _catalogState.value = CatalogState.Unavailable(
-                "Recompa catalog unavailable — showing your curated ports."
-            )
+        } else if (parsed == null) {
+            val cached = withContext(Dispatchers.IO) { recompaApi.loadCached() }
+            if (cached == null) {
+                _catalogState.value = CatalogState.Unavailable(
+                    "Recompa catalog unavailable — showing your curated ports."
+                )
+            }
         }
     }
 
@@ -1361,6 +1432,16 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
      * Fetch each configured remote folder's listing once per session
      * and cache the file entries. Shared by the per-port detail page
      * and the Library's "Games with matches" filter.
+     *
+     * Cache-first (v1.8.5): a source's parsed entries are served from
+     * the on-disk cache immediately, so pairing starts from disk data
+     * with no network wait, and the fresh fetch runs in the
+     * background. On a fetch error the cached entries stay in place —
+     * the list is never overwritten with an empty list — so a game
+     * page keeps showing its cached files and magnets while offline.
+     * An empty successful listing (a genuinely empty folder) does
+     * replace the cache, because [fetchServerEntries] returns null
+     * for an error and an empty list for a successful empty fetch.
      */
     private fun ensureServerListings() {
         _remoteFolders.value.forEach { source ->
@@ -1368,10 +1449,28 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
             if (_serverLoading.value.contains(source.id)) return@forEach
             _serverLoading.value = _serverLoading.value + source.id
             viewModelScope.launch(Dispatchers.IO) {
+                // Serve the disk cache first — pairing starts from
+                // disk data while the fresh fetch runs, so a cold
+                // start never waits on the network or on parsing
+                // remote.json (11 MB). The load runs on IO, never
+                // Main: the cached listing is a few MB of JSON.
+                val cached = remoteListingsCache.load(source.id)
+                if (cached != null) {
+                    withContext(Dispatchers.Main) {
+                        _serverListings.value = _serverListings.value + (source.id to cached)
+                    }
+                }
                 val creds = remoteCredentials.load(source.id)
                 val entries = fetchServerEntries(source, creds)
                 withContext(Dispatchers.Main) {
-                    _serverListings.value = _serverListings.value + (source.id to entries)
+                    if (entries != null) {
+                        _serverListings.value = _serverListings.value + (source.id to entries)
+                        viewModelScope.launch(Dispatchers.IO) {
+                            remoteListingsCache.save(source.id, entries)
+                        }
+                    }
+                    // On error (entries == null) the cached entries
+                    // stay in place — never overwritten with nothing.
                     _serverLoading.value = _serverLoading.value - source.id
                 }
             }
@@ -1396,16 +1495,19 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
      * servers usually group files in per-game folders). Folders are
      * dropped — the Server section lists files only. Uses only the
      * existing listing parser; an unreadable folder is skipped, never
-     * an error for the whole source.
+     * an error for the whole source. Returns null when the ROOT fetch
+     * fails (network error, HTTP error, unparseable) so the caller can
+     * tell an error from a successful empty listing and keep the
+     * cached entries; a subfolder that fails is just skipped.
      */
     private fun fetchServerEntries(
         source: RemoteFolderSource,
         creds: Pair<String, String>?
-    ): List<RemoteEntry> {
+    ): List<RemoteEntry>? {
         val root = when (val result =
             remoteDirectoryApi.fetch(source.url, creds?.first, creds?.second)) {
             is RemoteListingResult.Listing -> result.entries
-            is RemoteListingResult.Error -> return emptyList()
+            is RemoteListingResult.Error -> return null
         }
         val files = root.filter { !it.isFolder }.toMutableList()
         root.filter { it.isFolder }.forEach { folder ->
@@ -1779,6 +1881,9 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
             remoteFoldersStore.remove(source)
             _serverListings.value = _serverListings.value - source.id
             _serverLoading.value = _serverLoading.value - source.id
+            // Drop the source's cached listing too, so a re-added
+            // source with the same id never serves stale entries.
+            remoteListingsCache.clear(source.id)
             if (remoteSource?.id == source.id) {
                 remoteSource = null
                 remoteTrail = emptyList()

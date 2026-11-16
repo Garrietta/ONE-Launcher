@@ -178,14 +178,19 @@ fun hintsFromGameTitle(game: String, catalogId: String): List<String> {
 /**
  * Title similarity for the NAME_ONLY gate (v1.8.0): the overlap
  * coefficient between a file's title words and a game's title words
- * — |intersection| / min(|file|, |game|). Both titles are cleaned the
- * same way: the file's base name only (a remote path prefix is not
- * part of the title), extension stripped, parenthesized and bracketed
- * tags removed ("(GB)", "(USA)", "[0400...]"), diacritics folded,
- * lowercased, split into words, and tokens shorter than 3 characters
- * plus stopwords and generic tokens dropped — the same "significant
- * word" rule as [hintsFromGameTitle]. Returns 0.0 when either side
- * has no significant words.
+ * — |intersection| / min(|file|, |game|). Both titles are cleaned
+ * the same way ([titleWords]): extension stripped, parenthesized
+ * and bracketed tags removed ("(GB)", "(USA)", "[0400...]"),
+ * diacritics folded, lowercased, split into words, and tokens
+ * shorter than 3 characters plus stopwords and generic tokens
+ * dropped — the same "significant word" rule as
+ * [hintsFromGameTitle]. The one difference: a file name may carry a
+ * remote path prefix (a folder or URL path before the file name),
+ * so the file side is reduced to its base name here; a game title
+ * is never a path, so a "/" in it is part of the title and is kept
+ * (".hack//versus" is "hack" + "versus", "Kingdom Hearts 358/2
+ * Days" keeps "kingdom", "hearts", "358" and "days"). Returns 0.0
+ * when either side has no significant words.
  *
  * The coefficient is symmetric: it is 1.0 when the shorter title is
  * fully contained in the longer one. That is the point — a file may
@@ -202,30 +207,49 @@ fun hintsFromGameTitle(game: String, catalogId: String): List<String> {
  * only "system" (0.5) — all below the 0.90 gate.
  */
 fun titleSimilarity(fileName: String, gameTitle: String): Double {
-    val fileWords = titleWords(fileName).toSet()
+    // The file side may be a path — reduce it to its base name
+    // (a remote path prefix is not part of the title). The game
+    // side is a title, never a path, so it is passed as-is: a "/"
+    // in it is part of the title (see [titleWords]).
+    val fileWords = titleWords(
+        fileName.substringAfterLast('/').substringAfterLast('\\')
+    ).toSet()
     val gameWords = titleWords(gameTitle).toSet()
     if (fileWords.isEmpty() || gameWords.isEmpty()) return 0.0
     val shared = fileWords.intersect(gameWords).size
     return shared.toDouble() / minOf(fileWords.size, gameWords.size)
 }
 
-/** Significant words of a title, cleaned as described above. */
+/**
+ * Significant words of a title, cleaned as described in
+ * [titleSimilarity].
+ *
+ * A "/" in a title is part of the title, not a path separator — it
+ * is NOT stripped here. ".hack//versus" is two words ("hack",
+ * "versus"), not one ("versus"); "Kingdom Hearts 358/2 Days" keeps
+ * "kingdom", "hearts", "358" and "days"; "The Void/Tension" keeps
+ * "void" and "tension". Stripping the prefix (the old behavior)
+ * reduced such a game to a single word, so any file sharing that
+ * word passed the 0.90 similarity gate with 1.0 — every "versus"
+ * game matched .hack//versus. A file name that is really a path
+ * has its prefix stripped by [titleSimilarity] on the file side
+ * only, where a remote path prefix is not part of the title.
+ */
 fun titleWords(title: String): List<String> {
-    val base = title.substringAfterLast('/').substringAfterLast('\\')
     // Strip a trailing file extension — but only when it looks like
     // one. A game title can itself contain dots ("S.T.A.L.K.E.R.",
     // "Dr. Robotnik's..."), and stripping at the last dot would
     // delete the rest of the title, leaving no significant words at
     // all. An extension is short, alphanumeric, and has a letter.
     val noExt = run {
-        val dot = base.lastIndexOf('.')
+        val dot = title.lastIndexOf('.')
         if (dot < 0) {
-            base
+            title
         } else {
-            val ext = base.substring(dot + 1)
+            val ext = title.substring(dot + 1)
             val looksLikeExtension = ext.isNotEmpty() && ext.length <= 10 &&
                 ext.all { it.isLetterOrDigit() } && ext.any { it.isLetter() }
-            if (looksLikeExtension) base.substring(0, dot) else base
+            if (looksLikeExtension) title.substring(0, dot) else title
         }
     }
     val noTags = noExt.replace(Regex("\\([^)]*\\)|\\[[^]]*\\]"), " ")
