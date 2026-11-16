@@ -91,7 +91,6 @@ import androidx.navigation.compose.rememberNavController
 import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
 import coil.compose.AsyncImage
-import dev.one.launcher.data.CatalogState
 import dev.one.launcher.data.MatchKind
 import dev.one.launcher.data.PortMatcher
 import dev.one.launcher.data.PortSettings
