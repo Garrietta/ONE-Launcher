@@ -85,6 +85,63 @@ data class PairingCache(
 fun isPairingCacheUsable(cache: PairingCache?): Boolean =
     cache != null && cache.version == PAIRING_CACHE_VERSION
 
+/**
+ * Cheap content fingerprint (v1.8.4) for the pairing maps, so the
+ * background refresh can tell whether the pairings changed without
+ * rebuilding the cached forms and deep-comparing them (the v1.8.3
+ * ANR: that rebuild + deep equality ran on Main over ~24k entries,
+ * on every combine emission). A 64-bit rolling hash over the stable
+ * content of every file and magnet — name, kind, source, port, where,
+ * remote URL, detected file, downloaded inner entry, and the
+ * Premiumize item id; name, magnet URL, kind, port, where, and
+ * remote source for magnets. The Premiumize download link is
+ * deliberately EXCLUDED: it is a session URL that can change between
+ * fetches without the file changing, and it is dropped from the cache
+ * anyway, so a link-only change must not count as a pairing change.
+ * Same content -> same fingerprint; different content -> (with
+ * overwhelming probability) a different fingerprint. Comparing two
+ * fingerprints is O(1); computing one is a single cheap pass with no
+ * allocations. Enum values hash by name, so the fingerprint is
+ * stable across runs.
+ */
+fun pairingMapsFingerprint(
+    files: Map<String, List<GameFile>>,
+    magnets: Map<String, List<GameMagnetLink>>
+): Long {
+    var h = -3750763034362895579L
+    h = h * 31 + files.size
+    for ((key, list) in files) {
+        h = h * 31 + key.hashCode()
+        h = h * 31 + list.size
+        for (f in list) {
+            h = h * 31 + f.name.hashCode()
+            h = h * 31 + f.kind.name.hashCode()
+            h = h * 31 + f.source.name.hashCode()
+            h = h * 31 + f.portId.hashCode()
+            h = h * 31 + f.where.hashCode()
+            h = h * 31 + (f.remoteSourceName?.hashCode() ?: 0)
+            h = h * 31 + (f.remoteUrl?.hashCode() ?: 0)
+            h = h * 31 + (f.premiumizeItem?.id?.hashCode() ?: 0)
+            h = h * 31 + (f.detected?.hashCode() ?: 0)
+            h = h * 31 + (f.downloadedInnerEntry?.hashCode() ?: 0)
+        }
+    }
+    h = h * 31 + magnets.size
+    for ((key, list) in magnets) {
+        h = h * 31 + key.hashCode()
+        h = h * 31 + list.size
+        for (m in list) {
+            h = h * 31 + m.name.hashCode()
+            h = h * 31 + m.magnetUrl.hashCode()
+            h = h * 31 + m.kind.name.hashCode()
+            h = h * 31 + m.portId.hashCode()
+            h = h * 31 + m.where.hashCode()
+            h = h * 31 + (m.remoteSourceName?.hashCode() ?: 0)
+        }
+    }
+    return h
+}
+
 /** A [GameFile] as a cache record. The Premiumize download link is
  *  dropped — Download re-fetches it via itemDetails. */
 fun GameFile.toCached(): CachedGameFile =

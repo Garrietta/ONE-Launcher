@@ -34,10 +34,13 @@ enum class MatchKind {
     /** An archive whose name hits a hint and whose zip contents were
      *  inspected locally and contain a file that matches the port directly. */
     ARCHIVE_CONFIRMED,
-    /** An archive whose name hits a hint. It probably contains the port's
-     *  file, but the contents were not (or could not be) inspected — a
-     *  .7z/.rar can never be inspected here, and a .zip is only inspected
-     *  once it is on this device. */
+    /** An archive whose name hits a hint and is specific (v1.8.4): it
+     *  hits at least two of the port's hints (each 4+ chars), or its
+     *  title is at least 90% explained by the game's title. A single
+     *  shared word ("fire", "man", "star") is no longer enough. It
+     *  probably contains the port's file, but the contents were not
+     *  (or could not be) inspected — a .7z/.rar can never be inspected
+     *  here, and a .zip is only inspected once it is on this device. */
     ARCHIVE_PROVISIONAL,
     /**
      * Name-only, provisional: the catalog lists no file formats for this
@@ -94,10 +97,12 @@ data class PortMatch(
  * positive conflict.
  *
  * Archives (.zip, .7z, .rar) are matched on name only: an archive matches
- * a port when its base name (minus the extension) contains one of the
- * port's hints. A .zip that is already on this device can be confirmed by
- * inspecting its entries with [inspectZip]; .7z/.rar are never inspected
- * (no 7z library is bundled) and stay provisional.
+ * a port when its base name (minus the extension) hits one of the port's
+ * hints AND is specific (v1.8.4) — at least two of the port's hints (each
+ * 4+ chars), or a title at least 90% explained by the game's title. A
+ * .zip that is already on this device can be confirmed by inspecting its
+ * entries with [inspectZip]; .7z/.rar are never inspected (no 7z library
+ * is bundled) and stay provisional.
  *
  * Ports the catalog lists no formats for (most of the catalog) match by
  * name only, through the same whole-word hint rules — on a DISTINCTIVE
@@ -285,7 +290,42 @@ object PortMatcher {
         // files may come in an archive (zip_ok), or for curated ports.
         if (!port.archiveOk) return null
         val baseName = fileName.substringBeforeLast('.', fileName)
-        if (nameHitsHints(baseName, port.fileNameHints, port.fileNameRegex)) {
+        // A single shared word is not enough (v1.8.4): the file's
+        // name must hit one of the port's hints AND be specific —
+        // either it hits at least two of the port's hints (each 4+
+        // chars), or its title is at least 90% explained by the
+        // game's title (the v1.8.0 similarity gate). A bare
+        // "distinctive-or-two-hints" bar was swept and rejected: it
+        // lost the ports whose game title reduces to one shared word
+        // (SoH's own ".zip" — "ocarina" is shared; Super Mario 64's
+        // — "mario" is shared), and it still matched "10101 - Will
+        // the Starship" to Star Fox 64 through the port's id hint
+        // ("starship" is distinctive but also a common word). The
+        // similarity path keeps a file named after the game, and
+        // blocks a single common-word hit on a different title
+        // ("007 - Agent Under Fire" vs Fire Emblem, 0.25; "100 Man
+        // Yen Quiz Hunter" vs Mega Man 64, 0.50). A port with no
+        // hints and no regex keeps the old behavior, and a port
+        // regex still matches on its own — a regex is a specific
+        // pattern, not a shared word.
+        if (port.fileNameHints.isEmpty() && port.fileNameRegex == null) {
+            return MatchKind.ARCHIVE_PROVISIONAL
+        }
+        if (port.fileNameRegex != null) {
+            val regexHits = try {
+                Regex(port.fileNameRegex, RegexOption.IGNORE_CASE)
+                    .containsMatchIn(baseName)
+            } catch (e: Exception) {
+                false
+            }
+            if (regexHits) return MatchKind.ARCHIVE_PROVISIONAL
+        }
+        if (nameHitsTwoHints(baseName, port.fileNameHints)) {
+            return MatchKind.ARCHIVE_PROVISIONAL
+        }
+        if (titleSimilarity(baseName, port.game) >= NAME_ONLY_MIN_TITLE_SIMILARITY &&
+            nameHitsHints(baseName, port.fileNameHints, null)
+        ) {
             return MatchKind.ARCHIVE_PROVISIONAL
         }
         return null

@@ -13,8 +13,8 @@ android {
         applicationId = "com.garrietta.one"
         minSdk = 26
         targetSdk = 34
-        versionCode = 17
-        versionName = "1.8.3"
+        versionCode = 18
+        versionName = "1.8.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

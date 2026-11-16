@@ -13,8 +13,6 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import dev.one.launcher.data.CachedGameFile
-import dev.one.launcher.data.CachedMagnetLink
 import dev.one.launcher.data.CustomLink
 import dev.one.launcher.data.CustomLinksStore
 import dev.one.launcher.data.DetectedFile
@@ -72,6 +70,7 @@ import dev.one.launcher.data.normalizeCustomLinkUrl
 import dev.one.launcher.data.normalizeRemoteFolderUrl
 import dev.one.launcher.data.pairGamesWithFiles
 import dev.one.launcher.data.pairGamesWithMagnets
+import dev.one.launcher.data.pairingMapsFingerprint
 import dev.one.launcher.data.pickApkAsset
 import dev.one.launcher.data.resolveDetected
 import dev.one.launcher.data.sha256Matches
@@ -82,6 +81,7 @@ import dev.one.launcher.model.Port
 import dev.one.launcher.model.PortCatalog
 import dev.one.launcher.model.PortFork
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -94,6 +94,11 @@ import kotlinx.coroutines.withContext
 import okhttp3.Credentials
 import java.io.File
 import java.net.URLConnection
+
+/** How long the pairing-cache save waits for the sources to stop
+ *  changing before running (v1.8.4): a burst of combine emissions
+ *  during startup coalesces into one background pass. */
+private const val PAIRING_CACHE_SAVE_DEBOUNCE_MS = 250L
 
 data class PortStatus(
     val installedPackage: String? = null,
@@ -447,18 +452,22 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     private var pairingCacheLoaded = false
 
     /**
-     * The cached form of the last pairing map saved (or loaded), so
-     * the background refresh only rewrites the store when the
-     * pairings actually changed.
+     * The content fingerprint of the last pairing maps saved (or
+     * loaded), so the background refresh can tell whether the
+     * pairings changed with a cheap hash comparison instead of
+     * rebuilding the cached forms and deep-comparing them on Main
+     * (the v1.8.3 ANR: that rebuild + deep equality ran on the main
+     * thread over ~24k entries, on every combine emission). 0 when
+     * no cache has been loaded or saved yet.
      */
-    private var lastSavedPairings: Map<String, List<CachedGameFile>> = emptyMap()
+    private var lastPairingFingerprint: Long = 0L
 
-    /** The cached form of the last magnet pairing map saved (or
-     *  loaded) — the magnet channel's equivalent of
-     *  [lastSavedPairings], so the store is only rewritten when the
-     *  magnet pairings actually changed. */
-    private var lastSavedMagnetPairings: Map<String, List<CachedMagnetLink>> =
-        emptyMap()
+    /** The pending pairing-cache save, if one is scheduled. Cancelled
+     *  and rescheduled on every new combine emission, so a burst of
+     *  emissions during startup (each source landing) coalesces into
+     *  a single background pass instead of queuing up one expensive
+     *  rebuild per emission. */
+    private var pairingCacheSaveJob: Job? = null
 
     private val starsApi = GitHubStarsApi()
     private val starCacheStore = StarCacheStore(application)
@@ -599,7 +608,6 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
                 null
             }
             if (cache != null) {
-                lastSavedPairings = cache.pairings
                 val map = cache.pairings.mapValues { (_, files) ->
                     files.mapNotNull { it.toGameFile() }
                 }.filterValues { it.isNotEmpty() }
@@ -609,11 +617,18 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
                 // channel separation — a cache written by v1.8.2 has
                 // no magnet field and decodes it as empty, and the
                 // background refresh fills it in.
-                lastSavedMagnetPairings = cache.magnetPairings
                 val magnetMap = cache.magnetPairings.mapValues { (_, links) ->
                     links.mapNotNull { it.toGameMagnetLink() }
                 }.filterValues { it.isNotEmpty() }
                 setMagnetPairings(magnetMap)
+                // The fingerprint of the loaded cache, so the first
+                // background refresh can tell whether the live
+                // pairings changed without rebuilding and
+                // deep-comparing the cached forms (the v1.8.3 ANR).
+                // Computed off Main — it walks every cached entry.
+                lastPairingFingerprint = withContext(Dispatchers.Default) {
+                    pairingMapsFingerprint(map, magnetMap)
+                }
             }
             pairingCacheLoaded = true
         }
@@ -677,7 +692,7 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
                     // before it has even been loaded.
                     if (!pairingCacheLoaded) return@collect
                     if (!isPairingRefreshSettled()) return@collect
-                    savePairingCacheIfChanged(pairingMap, magnetMap)
+                    schedulePairingCacheSave(pairingMap, magnetMap)
                 }
         }
     }
@@ -705,34 +720,56 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
      * are compared and saved together, in one cache record — a
      * refresh that changes only one still writes both, so the two
      * channels can never drift apart on disk.
+     *
+     * The expensive work never runs on Main (v1.8.4): the content
+     * fingerprint is computed on Dispatchers.Default and compared in
+     * O(1), the cached-form rebuild runs on Dispatchers.Default, and
+     * the store write runs on Dispatchers.IO. Only the cheap
+     * StateFlow updates post back to Main. The v1.8.3 version did the
+     * cached-form rebuild plus a deep structural equality over ~24k
+     * entries synchronously on Main, on every combine emission —
+     * that is the freeze that ANR'd the app. Rapid successive
+     * emissions coalesce: each new one cancels the pending save and
+     * schedules a fresh one, so the work runs once, for the latest
+     * maps, after the sources stop changing.
      */
-    private fun savePairingCacheIfChanged(
+    private fun schedulePairingCacheSave(
         map: Map<String, List<GameFile>>,
         magnetMap: Map<String, List<GameMagnetLink>>
     ) {
-        val cachedForm = map.mapValues { (_, files) -> files.map { it.toCached() } }
-        val magnetCachedForm =
-            magnetMap.mapValues { (_, links) -> links.map { it.toCached() } }
-        if (cachedForm == lastSavedPairings &&
-            magnetCachedForm == lastSavedMagnetPairings
-        ) return
-        lastSavedPairings = cachedForm
-        lastSavedMagnetPairings = magnetCachedForm
-        setPairingCache(map)
-        setMagnetPairings(magnetMap)
-        _gamesWithFiles.value = map.keys
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                pairingCacheStore.save(
-                    PairingCache(
-                        PAIRING_CACHE_VERSION,
-                        System.currentTimeMillis(),
-                        cachedForm,
-                        magnetCachedForm
+        pairingCacheSaveJob?.cancel()
+        pairingCacheSaveJob = viewModelScope.launch {
+            delay(PAIRING_CACHE_SAVE_DEBOUNCE_MS)
+            // The cheap change check: a 64-bit content hash,
+            // computed off Main. Unchanged pairings skip the
+            // rebuild, the flow updates, and the store write.
+            val fingerprint = withContext(Dispatchers.Default) {
+                pairingMapsFingerprint(map, magnetMap)
+            }
+            if (fingerprint == lastPairingFingerprint) return@launch
+            // Rebuild the cached forms off Main (the v1.8.3 ANR did
+            // this plus the deep equality on Main, over ~24k entries).
+            val (cachedForm, magnetCachedForm) = withContext(Dispatchers.Default) {
+                map.mapValues { (_, files) -> files.map { it.toCached() } } to
+                    magnetMap.mapValues { (_, links) -> links.map { it.toCached() } }
+            }
+            lastPairingFingerprint = fingerprint
+            setPairingCache(map)
+            setMagnetPairings(magnetMap)
+            _gamesWithFiles.value = map.keys
+            withContext(Dispatchers.IO) {
+                try {
+                    pairingCacheStore.save(
+                        PairingCache(
+                            PAIRING_CACHE_VERSION,
+                            System.currentTimeMillis(),
+                            cachedForm,
+                            magnetCachedForm
+                        )
                     )
-                )
-            } catch (e: Exception) {
-                // Cache write is best-effort; the in-memory pairings stand.
+                } catch (e: Exception) {
+                    // Cache write is best-effort; the in-memory pairings stand.
+                }
             }
         }
     }

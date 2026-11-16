@@ -136,7 +136,6 @@ import dev.one.launcher.data.PremiumizeItem
 import dev.one.launcher.data.RemoteDisplayFormat
 import dev.one.launcher.data.RemoteEntry
 import dev.one.launcher.data.RemoteFolderSource
-import dev.one.launcher.data.dedupeGameFiles
 import dev.one.launcher.data.fileSourceLabel
 import dev.one.launcher.data.filterGames
 import dev.one.launcher.data.formatRemoteTitle
@@ -145,6 +144,8 @@ import dev.one.launcher.data.matchCloudFilesForGame
 import dev.one.launcher.data.matchLocalFilesForGame
 import dev.one.launcher.data.matchMagnetLinksForGame
 import dev.one.launcher.data.matchServerFilesForGame
+import dev.one.launcher.data.mergeLiveAndCachedFiles
+import dev.one.launcher.data.mergeLiveAndCachedMagnets
 import dev.one.launcher.data.parseHiddenExtensions
 import dev.one.launcher.data.rankPortsByStars
 import dev.one.launcher.data.shouldShowRemoteEntry
@@ -1854,10 +1855,9 @@ private fun GamePageContent(
     // gap the live match has not produced yet.
     val cachedForGame = pairingCache[game.key].orEmpty()
     val gameFiles = remember(cloudMatches, serverMatches, localMatches, cachedForGame) {
-        val live = dedupeGameFiles(localMatches + cloudMatches + serverMatches)
-        val liveNames = live.map { it.name.lowercase() }.toSet()
-        val extra = cachedForGame.filter { it.name.lowercase() !in liveNames }
-        dedupeGameFiles(live + extra)
+        mergeLiveAndCachedFiles(
+            localMatches + cloudMatches + serverMatches, cachedForGame
+        )
     }
 
     // Magnet links (v1.8.3): matched from the remote folders by name
@@ -1872,9 +1872,7 @@ private fun GamePageContent(
     }
     val cachedMagnetsForGame = magnetPairings[game.key].orEmpty()
     val gameMagnets = remember(serverMagnetMatches, cachedMagnetsForGame) {
-        val liveUrls = serverMagnetMatches.map { it.magnetUrl }.toSet()
-        val extra = cachedMagnetsForGame.filter { it.magnetUrl !in liveUrls }
-        (serverMagnetMatches + extra).sortedBy { it.name.lowercase() }
+        mergeLiveAndCachedMagnets(serverMagnetMatches, cachedMagnetsForGame)
     }
 
     // Fetch this game's star counts and make sure its cloud and server
@@ -1944,19 +1942,12 @@ private fun GamePageContent(
             OutlinedButton(onClick = onGoToCloud) {
                 Text("Go to Cloud")
             }
-        } else if ((cloudAllLoading && !cloudAllLoaded) ||
-            (serverLoading.isNotEmpty() && serverListings.isEmpty())
-        ) {
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(text = "Checking your files…", style = MaterialTheme.typography.bodyMedium)
-        } else if (gameFiles.isEmpty()) {
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = "No file for this game yet — in your local folder, " +
-                    "your Premiumize cloud, or your server library.",
-                style = MaterialTheme.typography.bodyMedium
-            )
-        } else {
+        } else if (gameFiles.isNotEmpty()) {
+            // Cached files show immediately (v1.8.4): gameFiles already
+            // includes the pairing cache, so a game with cached files
+            // never sits on "Checking your files…" while the live
+            // sources (the 36 MB remote.json) are still loading — the
+            // live match refreshes the list when it lands.
             gameFiles.forEach { file ->
                 Spacer(modifier = Modifier.height(8.dp))
                 GameFileRow(
@@ -1970,6 +1961,21 @@ private fun GamePageContent(
                     onExtract = { portId -> viewModel.extractMatchedArchive(portId) }
                 )
             }
+        } else if ((cloudAllLoading && !cloudAllLoaded) ||
+            (serverLoading.isNotEmpty() && serverListings.isEmpty())
+        ) {
+            // Only when there is truly nothing yet — no cached files
+            // and the sources are still loading — is the page still
+            // checking.
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(text = "Checking your files…", style = MaterialTheme.typography.bodyMedium)
+        } else {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "No file for this game yet — in your local folder, " +
+                    "your Premiumize cloud, or your server library.",
+                style = MaterialTheme.typography.bodyMedium
+            )
         }
         if (downloadError != null) {
             Text(text = downloadError!!, color = MaterialTheme.colorScheme.error)

@@ -1,5 +1,45 @@
 # Changelog
 
+## v1.8.4 — 2026-11-16
+
+Freeze/ANR fix and the ARCHIVE_PROVISIONAL tightening. The v1.8.3
+game page could sit on "Checking your files…" for 13+ seconds and
+then freeze the Library into an ANR: the pairing-cache save rebuilt
+the cached forms and deep-compared them on the main thread, over
+~24k entries, on every combine emission — and the magnet map made
+that far larger than v1.8.2's file-only map. The save now runs off
+Main (a cheap content fingerprint, computed on Dispatchers.Default
+and compared in O(1), gates the rebuild and the store write, and
+rapid emissions debounce into a single pass), and the game page
+shows its cached files immediately instead of gating on the live
+server listings — "Checking your files…" only appears when there
+is truly nothing yet and the sources are still loading.
+
+The archive rule is tightened too: an archive now needs a hint hit
+AND (at least two of the port's hints, each 4+ chars, or a title at
+least 90% explained by the game's title). A single common-word hit
+no longer matches — "007 - Agent Under Fire" is gone from Fire
+Emblem: The Sacred Stones, "100 Man Yen Quiz Hunter" from Mega Man
+64, and "10101 - Will the Starship" from Star Fox 64, for both
+magnets and downloadable files. A bare distinctive-or-two-hints bar
+was swept and rejected: it lost the ports whose game title reduces
+to one shared word (SoH's own ".zip", Super Mario 64's, Star Fox
+64's), and it still matched "10101" through the port's id hint. The
+similarity path keeps a file named after the game. Verified over
+the full merged catalog: no canonical file lost (601/601 still
+match), and the 3,314 dropped magnets are all single-common-word
+false positives. The 90% similarity gate and the
+platform-consistency rule are unchanged.
+
+- 'Splosion Man (and every game page) shows its files — or "No
+  file" — immediately from the pairing cache, with no 13-second
+  "Checking your files…" hang while the remote.json loads.
+- The Library stays responsive while the pairing refresh runs; no
+  freeze, no ANR.
+- Fire Emblem: The Sacred Stones no longer shows the 007 magnet or
+  file; Eidos still shows Pokemon Black; PokePark Wii still shows
+  its USA magnet.
+
 ## v1.8.3 — 2026-11-16
 
 Magnet links on the game page. A game whose only links are magnets

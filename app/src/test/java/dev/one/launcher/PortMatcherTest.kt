@@ -149,6 +149,70 @@ class PortMatcherTest {
         requiredDump = "Your own Oracle of Ages ROM."
     )
 
+    // ---- ARCHIVE_PROVISIONAL tightening (v1.8.4) ----
+
+    // Fixtures mirroring the live catalog ports (hints exactly as
+    // hintsFromGameTitle builds them, plus the catalog id).
+    private val fireEmblem = Port(
+        id = "fire-emblem-ss-recomp",
+        title = "Fire Emblem The Sacred Stones",
+        game = "Fire Emblem The Sacred Stones",
+        system = "Game Boy Advance",
+        type = "Recompilation",
+        repo = "example/fire-emblem-ss-recomp",
+        releasesUrl = "",
+        packageNames = emptyList(),
+        fileExtensions = listOf(".gba"),
+        fileNameHints = listOf("fire", "emblem", "sacred", "stones", "fire-emblem-ss-recomp"),
+        platformId = "gba",
+        requiredDump = "Your own Fire Emblem: The Sacred Stones ROM."
+    )
+
+    private val megaMan64 = Port(
+        id = "megaman64recompiled-mobile",
+        title = "Mega Man 64",
+        game = "Mega Man 64",
+        system = "Nintendo 64",
+        type = "Recompilation",
+        repo = "example/megaman64",
+        releasesUrl = "",
+        packageNames = emptyList(),
+        fileExtensions = listOf(".z64"),
+        fileNameHints = listOf("mega", "man", "megaman64recompiled-mobile"),
+        platformId = "n64",
+        requiredDump = "Your own Mega Man 64 ROM."
+    )
+
+    private val starFox64 = Port(
+        id = "starship",
+        title = "Starship",
+        game = "Star Fox 64",
+        system = "Nintendo 64",
+        type = "Decompilation",
+        repo = "izzy2lost/Starship",
+        releasesUrl = "",
+        packageNames = emptyList(),
+        fileExtensions = listOf(".z64"),
+        fileNameHints = listOf("star", "fox", "starship"),
+        platformId = "n64",
+        requiredDump = "Your own Star Fox 64 ROM."
+    )
+
+    private val mario64 = Port(
+        id = "ghostship",
+        title = "Ghostship",
+        game = "Super Mario 64",
+        system = "Nintendo 64",
+        type = "Decompilation",
+        repo = "example/ghostship",
+        releasesUrl = "",
+        packageNames = emptyList(),
+        fileExtensions = listOf(".z64"),
+        fileNameHints = listOf("mario", "ghostship"),
+        platformId = "n64",
+        requiredDump = "Your own Super Mario 64 ROM."
+    )
+
     // ---- Name-only matching for format-less ports (v1.4.1) ----
 
     // Mirrors the real catalog entry (id banananative-compilationfix):
@@ -635,6 +699,110 @@ class PortMatcherTest {
         assertEquals(1, kinds.size)
         assertEquals("soh", kinds.single().port.id)
         assertEquals(MatchKind.ARCHIVE_PROVISIONAL, kinds.single().kind)
+    }
+
+    // ---- ARCHIVE_PROVISIONAL tightening (v1.8.4) ----
+
+    @Test
+    fun archiveProvisionalSingleCommonWordNoLongerMatches() {
+        // The three v1.8.3 false positives: a single shared word hit
+        // ("fire", "man", "star") matched an archive to the wrong
+        // game. Each must be gone for BOTH magnets and downloadable
+        // files — the matcher rule is the same for both.
+        val magnetUri = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567" +
+            "&dn=Test&tr=udp://tracker.example.com:1337/announce"
+        // 007 - Agent Under Fire vs Fire Emblem: The Sacred Stones.
+        assertNull(PortMatcher.matchKind("007 - Agent Under Fire (USA).zip", fireEmblem))
+        assertNull(
+            PortMatcher.matchKind(
+                "007 - Agent Under Fire (USA).zip", fireEmblem,
+                "https://example.com/007-agent-under-fire.zip"
+            )
+        )
+        assertNull(
+            PortMatcher.matchMagnetKind(
+                RemoteEntry(
+                    name = "007 - Agent Under Fire (USA).zip",
+                    url = magnetUri, isFolder = false, kind = "magnet"
+                ),
+                fireEmblem
+            )
+        )
+        // 100 Man Yen Quiz Hunter vs Mega Man 64.
+        assertNull(PortMatcher.matchKind("100 Man Yen Quiz Hunter.zip", megaMan64))
+        assertNull(
+            PortMatcher.matchKind(
+                "100 Man Yen Quiz Hunter.zip", megaMan64,
+                "https://example.com/100-man-yen-quiz-hunter.zip"
+            )
+        )
+        assertNull(
+            PortMatcher.matchMagnetKind(
+                RemoteEntry(
+                    name = "100 Man Yen Quiz Hunter.zip",
+                    url = magnetUri, isFolder = false, kind = "magnet"
+                ),
+                megaMan64
+            )
+        )
+        // 10101 - Will the Starship vs Star Fox 64. This one still
+        // matched under a bare distinctive-or-two-hints bar, through
+        // the port's id hint ("starship" is distinctive but also a
+        // common word) — the title-similarity path is what blocks it
+        // (the file's title is nothing like "Star Fox 64").
+        assertNull(PortMatcher.matchKind("10101 - Will the Starship.zip", starFox64))
+        assertNull(
+            PortMatcher.matchKind(
+                "10101 - Will the Starship.zip", starFox64,
+                "https://example.com/10101-will-the-starship.zip"
+            )
+        )
+        assertNull(
+            PortMatcher.matchMagnetKind(
+                RemoteEntry(
+                    name = "10101 - Will the Starship.zip",
+                    url = magnetUri, isFolder = false, kind = "magnet"
+                ),
+                starFox64
+            )
+        )
+    }
+
+    @Test
+    fun archiveProvisionalCanonicalArchivesStillMatch() {
+        // The tightening must not lose the ports' own archives: a
+        // file named after the game passes on title similarity, even
+        // when the game's title reduces to a single shared word
+        // ("ocarina" is shared, "mario" is shared, "star" is shared).
+        assertEquals(
+            MatchKind.ARCHIVE_PROVISIONAL,
+            PortMatcher.matchKind("The Legend of Zelda - Ocarina of Time (USA).zip", oot)
+        )
+        assertEquals(
+            MatchKind.ARCHIVE_PROVISIONAL,
+            PortMatcher.matchKind("Super Mario 64 (USA).zip", mario64)
+        )
+        assertEquals(
+            MatchKind.ARCHIVE_PROVISIONAL,
+            PortMatcher.matchKind("Star Fox 64 (USA).zip", starFox64)
+        )
+        assertEquals(
+            MatchKind.ARCHIVE_PROVISIONAL,
+            PortMatcher.matchKind("Mega Man 64 (USA).zip", megaMan64)
+        )
+        // And the same files as magnets.
+        val magnetUri = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567" +
+            "&dn=Test&tr=udp://tracker.example.com:1337/announce"
+        assertEquals(
+            MatchKind.ARCHIVE_PROVISIONAL,
+            PortMatcher.matchMagnetKind(
+                RemoteEntry(
+                    name = "Star Fox 64 (USA).zip",
+                    url = magnetUri, isFolder = false, kind = "magnet"
+                ),
+                starFox64
+            )
+        )
     }
 
     @Test

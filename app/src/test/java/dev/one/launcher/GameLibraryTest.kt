@@ -28,9 +28,12 @@ import dev.one.launcher.data.matchCloudFilesForGame
 import dev.one.launcher.data.matchLocalFilesForGame
 import dev.one.launcher.data.matchMagnetLinksForGame
 import dev.one.launcher.data.matchServerFilesForGame
+import dev.one.launcher.data.mergeLiveAndCachedFiles
+import dev.one.launcher.data.mergeLiveAndCachedMagnets
 import dev.one.launcher.data.normalizeForTokens
 import dev.one.launcher.data.pairGamesWithFiles
 import dev.one.launcher.data.pairGamesWithMagnets
+import dev.one.launcher.data.pairingMapsFingerprint
 import dev.one.launcher.data.rankPortsByStars
 import dev.one.launcher.data.toCached
 import dev.one.launcher.data.toGameFile
@@ -1128,6 +1131,214 @@ class GameLibraryTest {
             )
         )
         assertFalse(isPairingCacheUsable(null))
+    }
+
+    // ---- Pairing-cache fingerprint + game-page cache merge (v1.8.4) ----
+    //
+    // The v1.8.3 freeze: the background refresh rebuilt the cached
+    // forms and deep-compared them on the main thread, over ~24k
+    // entries, on every combine emission. v1.8.4 replaces that deep
+    // equality with a cheap content fingerprint (O(1) to compare),
+    // computed off Main, and the game page reads the cached pairings
+    // immediately instead of gating on the live server listings.
+
+    @Test
+    fun pairingFingerprintIsStableForIdenticalContent() {
+        // Two separately built maps with identical content (same
+        // insertion order, as the ViewModel builds them) -> the same
+        // fingerprint, so an unchanged refresh is recognised as
+        // unchanged and skips the rebuild + store write.
+        fun buildFiles() = mapOf(
+            "game-a" to listOf(
+                GameFile(
+                    name = "Pokemon Black (NDS) (USA)",
+                    kind = MatchKind.NAME_ONLY,
+                    source = GameFileSource.LOCAL,
+                    portId = "eidos",
+                    where = "Found in your folder"
+                )
+            )
+        )
+        fun buildMagnets() = mapOf(
+            "game-b" to listOf(
+                GameMagnetLink(
+                    name = "PokePark Wii - Pikachu's Adventure (USA).zip",
+                    magnetUrl = "magnet:?xt=urn:btih:aaaa",
+                    kind = MatchKind.NAME_ONLY,
+                    portId = "pokepark-wiicompiled",
+                    where = "json"
+                )
+            )
+        )
+        assertEquals(
+            pairingMapsFingerprint(buildFiles(), buildMagnets()),
+            pairingMapsFingerprint(buildFiles(), buildMagnets())
+        )
+        assertEquals(
+            pairingMapsFingerprint(emptyMap(), emptyMap()),
+            pairingMapsFingerprint(emptyMap(), emptyMap())
+        )
+    }
+
+    @Test
+    fun pairingFingerprintChangesWhenContentChanges() {
+        val base = mapOf(
+            "game-a" to listOf(
+                GameFile(
+                    name = "Pokemon Black (NDS) (USA)",
+                    kind = MatchKind.NAME_ONLY,
+                    source = GameFileSource.LOCAL,
+                    portId = "eidos",
+                    where = "Found in your folder"
+                )
+            )
+        )
+        val magnets = emptyMap<String, List<GameMagnetLink>>()
+        val baseFp = pairingMapsFingerprint(base, magnets)
+        // A different file -> a different fingerprint.
+        val changed = mapOf(
+            "game-a" to listOf(
+                GameFile(
+                    name = "Pokemon White (NDS) (USA)",
+                    kind = MatchKind.NAME_ONLY,
+                    source = GameFileSource.LOCAL,
+                    portId = "eidos",
+                    where = "Found in your folder"
+                )
+            )
+        )
+        assertTrue(pairingMapsFingerprint(changed, magnets) != baseFp)
+        // A file added to another game -> a different fingerprint.
+        val added = base + ("game-b" to listOf(
+            GameFile(
+                name = "Something Else.zip",
+                kind = MatchKind.ARCHIVE_PROVISIONAL,
+                source = GameFileSource.SERVER,
+                portId = "other",
+                where = "json"
+            )
+        ))
+        assertTrue(pairingMapsFingerprint(added, magnets) != baseFp)
+        // A magnet added -> a different fingerprint.
+        val withMagnet = mapOf(
+            "game-b" to listOf(
+                GameMagnetLink(
+                    name = "PokePark Wii - Pikachu's Adventure (USA).zip",
+                    magnetUrl = "magnet:?xt=urn:btih:aaaa",
+                    kind = MatchKind.NAME_ONLY,
+                    portId = "pokepark-wiicompiled",
+                    where = "json"
+                )
+            )
+        )
+        assertTrue(pairingMapsFingerprint(base, withMagnet) != baseFp)
+    }
+
+    @Test
+    fun pairingFingerprintIgnoresPremiumizeLinkChanges() {
+        // The Premiumize download link is a session URL: it can
+        // change between fetches without the file changing, and it is
+        // dropped from the cache anyway. A link-only change must not
+        // count as a pairing change, or every cloud re-fetch would
+        // rewrite the cache.
+        val withoutLink = mapOf(
+            "game-a" to listOf(
+                GameFile(
+                    name = "Pokemon Black (NDS) (USA)",
+                    kind = MatchKind.NAME_ONLY,
+                    source = GameFileSource.CLOUD,
+                    portId = "eidos",
+                    where = "Premiumize",
+                    premiumizeItem = PremiumizeItem(
+                        id = "abc",
+                        name = "Pokemon Black (NDS) (USA)"
+                    )
+                )
+            )
+        )
+        val withLink = mapOf(
+            "game-a" to listOf(
+                GameFile(
+                    name = "Pokemon Black (NDS) (USA)",
+                    kind = MatchKind.NAME_ONLY,
+                    source = GameFileSource.CLOUD,
+                    portId = "eidos",
+                    where = "Premiumize",
+                    premiumizeItem = PremiumizeItem(
+                        id = "abc",
+                        name = "Pokemon Black (NDS) (USA)",
+                        link = "https://example.com/dl/abc?token=zzz"
+                    )
+                )
+            )
+        )
+        assertEquals(
+            pairingMapsFingerprint(withoutLink, emptyMap()),
+            pairingMapsFingerprint(withLink, emptyMap())
+        )
+    }
+
+    @Test
+    fun gamePageReadsCachedFilesWhenLiveSourcesAreStillLoading() {
+        // The game page's file state is the live match merged with
+        // the pairing cache. When the live sources have not loaded
+        // yet (the live list is empty), the page is exactly the
+        // cached list — it never sits on "Checking your files…"
+        // while the cache has files for the game.
+        val cached = listOf(
+            GameFile(
+                name = "Splosion Man (USA).zip",
+                kind = MatchKind.ARCHIVE_PROVISIONAL,
+                source = GameFileSource.SERVER,
+                portId = "splosion-man",
+                where = "json",
+                remoteSourceName = "json",
+                remoteUrl = "https://example.com/splosion-man.zip"
+            )
+        )
+        assertEquals(cached, mergeLiveAndCachedFiles(emptyList(), cached))
+        // A live file wins on a name clash; the cached copy only
+        // fills gaps the live match has not produced yet.
+        val live = listOf(
+            GameFile(
+                name = "Splosion Man (USA).zip",
+                kind = MatchKind.DIRECT,
+                source = GameFileSource.LOCAL,
+                portId = "splosion-man",
+                where = "Found in your folder"
+            )
+        )
+        assertEquals(live, mergeLiveAndCachedFiles(live, cached))
+        // No cached files and no live files -> empty (the page then
+        // shows "Checking your files…" only while sources load, else
+        // "No file for this game yet").
+        assertTrue(mergeLiveAndCachedFiles(emptyList(), emptyList()).isEmpty())
+    }
+
+    @Test
+    fun gamePageReadsCachedMagnetsWhenLiveSourcesAreStillLoading() {
+        val cached = listOf(
+            GameMagnetLink(
+                name = "PokePark Wii - Pikachu's Adventure (USA).zip",
+                magnetUrl = "magnet:?xt=urn:btih:aaaa",
+                kind = MatchKind.NAME_ONLY,
+                portId = "pokepark-wiicompiled",
+                where = "json"
+            )
+        )
+        assertEquals(cached, mergeLiveAndCachedMagnets(emptyList(), cached))
+        // A live link wins on a URI clash.
+        val live = listOf(
+            GameMagnetLink(
+                name = "PokePark Wii - Pikachu's Adventure (USA).zip",
+                magnetUrl = "magnet:?xt=urn:btih:aaaa",
+                kind = MatchKind.NAME_ONLY,
+                portId = "pokepark-wiicompiled",
+                where = "json"
+            )
+        )
+        assertEquals(live, mergeLiveAndCachedMagnets(live, cached))
+        assertTrue(mergeLiveAndCachedMagnets(emptyList(), emptyList()).isEmpty())
     }
 
     // ---- Magnet links on the game page (v1.8.3) ----

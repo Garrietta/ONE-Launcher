@@ -351,6 +351,42 @@ fun dedupeGameFiles(files: List<GameFile>): List<GameFile> {
         )
 }
 
+/**
+ * Merge one game's live files with its cached files (v1.8.4): the
+ * game page shows the cached pairings immediately on open, and the
+ * live match refreshes them when the sources land. Live files win
+ * on a name clash — a cached copy only fills a gap the live match
+ * has not produced yet. When the live sources have not loaded, the
+ * live list is empty and the page is exactly the cached list, so
+ * the page never sits on "Checking your files…" while the cache
+ * has files for the game.
+ */
+fun mergeLiveAndCachedFiles(
+    live: List<GameFile>,
+    cached: List<GameFile>
+): List<GameFile> {
+    val liveFiles = dedupeGameFiles(live)
+    val liveNames = liveFiles.map { it.name.lowercase() }.toSet()
+    val extra = cached.filter { it.name.lowercase() !in liveNames }
+    return dedupeGameFiles(liveFiles + extra)
+}
+
+/**
+ * Merge one game's live magnet links with its cached magnets
+ * (v1.8.4): the same immediate-from-cache rule as
+ * [mergeLiveAndCachedFiles], keyed on the magnet URI (a magnet's
+ * name can repeat across regions; the URI is the identity). Live
+ * links win on a URI clash; cached links only fill gaps.
+ */
+fun mergeLiveAndCachedMagnets(
+    live: List<GameMagnetLink>,
+    cached: List<GameMagnetLink>
+): List<GameMagnetLink> {
+    val liveUrls = live.map { it.magnetUrl }.toSet()
+    val extra = cached.filter { it.magnetUrl !in liveUrls }
+    return (live + extra).sortedBy { it.name.lowercase() }
+}
+
 // ---- Star ranking ----
 
 /** One cached star count: repo "owner/name" -> stars, fetched at epoch ms. */
