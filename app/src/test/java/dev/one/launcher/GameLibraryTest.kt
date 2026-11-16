@@ -425,6 +425,26 @@ class GameLibraryTest {
     }
 
     @Test
+    fun eidosStillMatchesPokemonBlack2() {
+        // The documented ambiguity (v1.6.0): there is no Black 2 port,
+        // so "Pokemon Black 2" matches Eidos only. The similarity
+        // gate (v1.8.0) must not break it: the "2" is a single
+        // character, not a significant word, so the file's title is
+        // fully explained by "Pokémon Black & White" (1.0).
+        val url = "https://example.com/pokemon-black-2.zip"
+        assertEquals(
+            MatchKind.NAME_ONLY,
+            PortMatcher.matchKind("Pokemon Black 2 (NDS) (USA)", eidos, url)
+        )
+        val matches = PortMatcher.matchKinds(
+            "Pokemon Black 2 (NDS) (USA)",
+            listOf(eidos, arceus, pokopia, acnh, armyMen),
+            url
+        )
+        assertEquals(listOf("eidos"), matches.map { it.port.id })
+    }
+
+    @Test
     fun pokopiaStillMatchesPokopiaOnly() {
         val file = "Pokémon Pokopia [0400A3A01EE4C000][v655360].nup"
         assertEquals(MatchKind.NAME_ONLY, PortMatcher.matchKind(file, pokopia))

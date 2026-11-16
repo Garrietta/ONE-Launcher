@@ -20,6 +20,13 @@ fun normalizeForTokens(text: String): String =
         .replace(Regex("\\p{Mn}+"), "")
         .lowercase()
 
+/**
+ * Minimum title similarity for a NAME_ONLY match (v1.8.0): the
+ * file's title must be at least 90% explained by the game's title
+ * ([titleSimilarity]). DIRECT matches are unaffected.
+ */
+const val NAME_ONLY_MIN_TITLE_SIMILARITY = 0.90
+
 /** How a file relates to a port. */
 enum class MatchKind {
     /** A ROM file in its own right: extension + hint both hit. */
@@ -214,6 +221,13 @@ object PortMatcher {
      * port), but two together identify the game ("pokemon" + "black"
      * is Eidos's file, not Arceus's). Ports with formats keep the
      * strict extension-gated matching above, unchanged.
+     *
+     * Both name-only ways also require the title-similarity gate
+     * (v1.8.0, [titleSimilarity] >= 0.90): a distinctive single word
+     * can still be a common word in file names ("blue", "gold",
+     * "double", "system"), so the file's title must be mostly
+     * explained by the game's title. DIRECT matches are unchanged —
+     * the gate applies only to NAME_ONLY.
      */
     fun matchKind(fileName: String, port: Port, fileUrl: String? = null): MatchKind? {
         // The game-file gate first: a non-game file matches nothing,
@@ -224,7 +238,14 @@ object PortMatcher {
             // No formats in the catalog for this port: match on the
             // game's name only. A port with no distinctive hint and
             // fewer than two long hints hitting matches nothing —
-            // safe failure, better than a false match.
+            // safe failure, better than a false match. And the
+            // title-similarity gate (v1.8.0): the file's title must
+            // be at least 90% explained by the game's title, or the
+            // shared word is a coincidence ("blue" in "Pokemon Blue"
+            // is not Blue Dragon's file).
+            if (titleSimilarity(fileName, port.game) < NAME_ONLY_MIN_TITLE_SIMILARITY) {
+                return null
+            }
             if (port.distinctiveNameHints.isNotEmpty() &&
                 nameHitsHints(fileName, port.distinctiveNameHints, null)
             ) {

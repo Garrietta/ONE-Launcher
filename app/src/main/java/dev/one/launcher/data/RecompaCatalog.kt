@@ -175,6 +175,65 @@ fun hintsFromGameTitle(game: String, catalogId: String): List<String> {
     return (words + normalizeForTokens(catalogId)).distinct()
 }
 
+/**
+ * Title similarity for the NAME_ONLY gate (v1.8.0): the overlap
+ * coefficient between a file's title words and a game's title words
+ * — |intersection| / min(|file|, |game|). Both titles are cleaned the
+ * same way: the file's base name only (a remote path prefix is not
+ * part of the title), extension stripped, parenthesized and bracketed
+ * tags removed ("(GB)", "(USA)", "[0400...]"), diacritics folded,
+ * lowercased, split into words, and tokens shorter than 3 characters
+ * plus stopwords and generic tokens dropped — the same "significant
+ * word" rule as [hintsFromGameTitle]. Returns 0.0 when either side
+ * has no significant words.
+ *
+ * The coefficient is symmetric: it is 1.0 when the shorter title is
+ * fully contained in the longer one. That is the point — a file may
+ * legitimately be a subset of a longer game title (Eidos: "Pokemon
+ * Black" vs "Pokémon Black & White"), and a game title may be a
+ * subset of a longer file title (Pokopia: game "Pokopia" vs file
+ * "Pokémon Pokopia"). A one-directional file→game containment would
+ * pass the first and fail the second, so the gate uses the symmetric
+ * form. Either way a single shared word is not enough: "Pokemon
+ * Blue" vs "Blue Dragon" shares only "blue" (0.5), "Pokemon Gold"
+ * vs "Marble Blast Gold" only "gold" (0.5), "Mario Kart Double
+ * Dash" vs "Tom Clancy's Splinter Cell: Double Agent" only "double"
+ * (0.25), and "Sega - Master System - Mark III" vs "System Shock"
+ * only "system" (0.5) — all below the 0.90 gate.
+ */
+fun titleSimilarity(fileName: String, gameTitle: String): Double {
+    val fileWords = titleWords(fileName).toSet()
+    val gameWords = titleWords(gameTitle).toSet()
+    if (fileWords.isEmpty() || gameWords.isEmpty()) return 0.0
+    val shared = fileWords.intersect(gameWords).size
+    return shared.toDouble() / minOf(fileWords.size, gameWords.size)
+}
+
+/** Significant words of a title, cleaned as described above. */
+fun titleWords(title: String): List<String> {
+    val base = title.substringAfterLast('/').substringAfterLast('\\')
+    // Strip a trailing file extension — but only when it looks like
+    // one. A game title can itself contain dots ("S.T.A.L.K.E.R.",
+    // "Dr. Robotnik's..."), and stripping at the last dot would
+    // delete the rest of the title, leaving no significant words at
+    // all. An extension is short, alphanumeric, and has a letter.
+    val noExt = run {
+        val dot = base.lastIndexOf('.')
+        if (dot < 0) {
+            base
+        } else {
+            val ext = base.substring(dot + 1)
+            val looksLikeExtension = ext.isNotEmpty() && ext.length <= 10 &&
+                ext.all { it.isLetterOrDigit() } && ext.any { it.isLetter() }
+            if (looksLikeExtension) base.substring(0, dot) else base
+        }
+    }
+    val noTags = noExt.replace(Regex("\\([^)]*\\)|\\[[^]]*\\]"), " ")
+    return normalizeForTokens(noTags)
+        .split(Regex("[^a-z0-9]+"))
+        .filter { it.length >= 3 && it !in HINT_STOPWORDS && it !in HINT_GENERIC_TOKENS }
+}
+
 /** Map one catalog port onto a [Port]. Catalog-provided values only. */
 fun mapCatalogPort(port: RecompaPort, platformName: String): Port {
     val assets = port.assets.orEmpty()

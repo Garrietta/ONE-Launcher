@@ -376,6 +376,99 @@ class PortMatcherTest {
         assertEquals(MatchKind.NAME_ONLY, kinds.single().kind)
     }
 
+    // ---- Title-similarity gate for NAME_ONLY (v1.8.0) ----
+    //
+    // Garrett's 2026-11-16 report: four .zip game files matched the
+    // wrong port by a single distinctive word. The similarity gate
+    // (titleSimilarity >= 0.90) blocks them — the file's title must
+    // be mostly explained by the game's title.
+
+    private val blueDragon = Port(
+        id = "blue-dragon",
+        title = "Blue Dragon",
+        game = "Blue Dragon",
+        system = "Xbox 360",
+        type = "Recompilation",
+        repo = "example/blue-dragon",
+        releasesUrl = "https://github.com/example/blue-dragon/releases",
+        packageNames = emptyList(),
+        fileExtensions = emptyList(),
+        fileNameHints = listOf("blue", "dragon", "blue-dragon"),
+        requiredDump = "Your own Blue Dragon game dump."
+    )
+
+    private val marbleBlastGold = Port(
+        id = "marble-blast-gold",
+        title = "Marble Blast Gold",
+        game = "Marble Blast Gold",
+        system = "PC",
+        type = "Recompilation",
+        repo = "example/marble-blast-gold",
+        releasesUrl = "https://github.com/example/marble-blast-gold/releases",
+        packageNames = emptyList(),
+        fileExtensions = emptyList(),
+        fileNameHints = listOf("marble", "blast", "gold", "marble-blast-gold"),
+        requiredDump = "Your own Marble Blast Gold game dump."
+    )
+
+    private val splinterCellDoubleAgent = Port(
+        id = "splinter-cell-double-agent",
+        title = "Tom Clancy's Splinter Cell: Double Agent",
+        game = "Tom Clancy's Splinter Cell: Double Agent",
+        system = "Xbox 360",
+        type = "Recompilation",
+        repo = "example/splinter-cell-double-agent",
+        releasesUrl = "https://github.com/example/splinter-cell-double-agent/releases",
+        packageNames = emptyList(),
+        fileExtensions = emptyList(),
+        fileNameHints = listOf(
+            "tom", "clancy", "splinter", "cell", "double", "agent",
+            "splinter-cell-double-agent"
+        ),
+        requiredDump = "Your own Splinter Cell: Double Agent game dump."
+    )
+
+    private val systemShock = Port(
+        id = "system-shock",
+        title = "System Shock",
+        game = "System Shock",
+        system = "PC",
+        type = "Recompilation",
+        repo = "example/system-shock",
+        releasesUrl = "https://github.com/example/system-shock/releases",
+        packageNames = emptyList(),
+        fileExtensions = emptyList(),
+        fileNameHints = listOf("system", "shock", "system-shock"),
+        requiredDump = "Your own System Shock game dump."
+    )
+
+    @Test
+    fun singleWordFalsePositivesBlockedBySimilarityGate() {
+        val ports = withDistinctiveHints(
+            listOf(blueDragon, marbleBlastGold, splinterCellDoubleAgent, systemShock)
+        )
+        val blue = ports.first { it.id == "blue-dragon" }
+        val gold = ports.first { it.id == "marble-blast-gold" }
+        val cell = ports.first { it.id == "splinter-cell-double-agent" }
+        val shock = ports.first { it.id == "system-shock" }
+        // Each file hits a distinctive hint, so without the
+        // similarity gate it would match. The gate blocks all four:
+        // the file's title is mostly NOT the game's title (0.5,
+        // 0.5, 0.25, 0.5 — all below 0.90).
+        assertTrue(blue.distinctiveNameHints.contains("blue"))
+        assertNull(PortMatcher.matchKind("Pokemon Blue (GB) (USA).zip", blue))
+        assertTrue(gold.distinctiveNameHints.contains("gold"))
+        assertNull(PortMatcher.matchKind("Pokemon Gold (GBC) (USA).zip", gold))
+        assertTrue(cell.distinctiveNameHints.contains("double"))
+        assertNull(
+            PortMatcher.matchKind("Mario Kart Double Dash (GC) (USA).zip", cell)
+        )
+        assertTrue(shock.distinctiveNameHints.contains("system"))
+        assertNull(
+            PortMatcher.matchKind("Sega - Master System - Mark III.zip", shock)
+        )
+    }
+
     @Test
     fun genericTokensMatchNothingEvenForFormatLessPorts() {
         val ports = listOf(pokopia, oot, daytona)

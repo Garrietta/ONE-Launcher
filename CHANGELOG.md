@@ -45,6 +45,30 @@ v1.7.0 release build (same signature).
   and sorting are unchanged.
 - Workflow (adapter.yml): ADAPTER_MINERVA_URL is passed through
   as --minerva when set; without it the run is r-roms only.
+- Matcher (NAME_ONLY, 90% title-similarity gate): a name-only
+  match now also requires the file's title to be at least 90%
+  explained by the game's title (the overlap coefficient —
+  |intersection| / min(|file|, |game|) — on significant words:
+  extension and (…)/[…] tags stripped, diacritics folded, words
+  of 3+ letters minus stopwords and generic tokens). Garrett's
+  four single-word false positives are blocked ("Pokemon Blue"
+  vs Blue Dragon, "Pokemon Gold" vs Marble Blast Gold, "Mario
+  Kart Double Dash" vs Splinter Cell: Double Agent, "Sega -
+  Master System - Mark III" vs System Shock — 0.5, 0.5, 0.25,
+  0.5), while Eidos ("Pokemon Black", "Pokemon Black 2") and
+  Pokopia still match at 1.0. The gate is symmetric, so it keeps
+  both the file-subset case (Eidos) and the game-subset case
+  (Pokopia, where the game title is shorter than the file title);
+  a one-directional file→game containment would have broken
+  Pokopia. DIRECT matches are unchanged — the gate applies only
+  to NAME_ONLY. Verified over the live Recompa catalog (536
+  ports, 464 format-less): a file named after its own game still
+  matches under the new rule for all 822 canonical cases, zero
+  lost. The sweep caught a real bug: stripping the extension at
+  the last dot truncated dotted titles ("S.T.A.L.K.E.R.",
+  "Dr. Robotnik's..."), leaving no significant words (0.0) —
+  the strip now only fires when the suffix looks like an
+  extension (short, alphanumeric, has a letter).
 
 ## v1.7.0 — 2026-11-16
 

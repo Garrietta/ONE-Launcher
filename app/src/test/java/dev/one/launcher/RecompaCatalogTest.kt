@@ -10,6 +10,7 @@ import dev.one.launcher.data.hintsFromGameTitle
 import dev.one.launcher.data.mapCatalogPort
 import dev.one.launcher.data.mergeCatalogs
 import dev.one.launcher.data.parseRecompaIndex
+import dev.one.launcher.data.titleSimilarity
 import dev.one.launcher.data.withDistinctiveHints
 import dev.one.launcher.model.Port
 import org.junit.Assert.assertEquals
@@ -359,6 +360,69 @@ class RecompaCatalogTest {
         assertFalse(hints.contains("usa"))
         val generic = hintsFromGameTitle("Some Random Game", "some-game")
         assertFalse(generic.contains("game"))
+    }
+
+    @Test
+    fun titleSimilarityIsSymmetricContainment() {
+        // The NAME_ONLY gate (v1.8.0): 1.0 when the shorter title is
+        // fully contained in the longer one, in either direction.
+        // A file that is a subset of a longer game title passes…
+        assertEquals(
+            1.0, titleSimilarity("Pokemon Black (NDS) (USA).zip", "Pokémon Black & White"), 0.001
+        )
+        // …and a game title that is a subset of a longer file title
+        // passes too (Pokopia: the game is "Pokopia", the file is
+        // "Pokémon Pokopia").
+        assertEquals(
+            1.0,
+            titleSimilarity(
+                "Pokémon Pokopia [0400A3A01EE4C000][v655360].nup", "Pokopia"
+            ),
+            0.001
+        )
+        // A single shared word is not enough — the four reported
+        // false positives all sit at 0.5 or below.
+        assertEquals(
+            0.5, titleSimilarity("Pokemon Blue (GB) (USA).zip", "Blue Dragon"), 0.001
+        )
+        assertEquals(
+            0.5, titleSimilarity("Pokemon Gold (GBC) (USA).zip", "Marble Blast Gold"), 0.001
+        )
+        assertEquals(
+            0.25,
+            titleSimilarity(
+                "Mario Kart Double Dash (GC) (USA).zip",
+                "Tom Clancy's Splinter Cell: Double Agent"
+            ),
+            0.001
+        )
+        assertEquals(
+            0.5,
+            titleSimilarity("Sega - Master System - Mark III.zip", "System Shock"),
+            0.001
+        )
+        // No significant words on either side is 0.0, never a match.
+        assertEquals(0.0, titleSimilarity("Game (USA).zip", "Some Random Game"), 0.001)
+        // A title that itself contains dots is not truncated at the
+        // last dot: the extension strip only fires when the suffix
+        // looks like an extension, so "S.T.A.L.K.E.R." and "Dr."
+        // keep the rest of the title (the sweep over the live
+        // catalog caught this — both were 0.0 before the fix).
+        assertEquals(
+            1.0,
+            titleSimilarity(
+                "S.T.A.L.K.E.R.: Shadow of Chernobyl.zip",
+                "S.T.A.L.K.E.R.: Shadow of Chernobyl"
+            ),
+            0.001
+        )
+        assertEquals(
+            1.0,
+            titleSimilarity(
+                "Dr. Robotnik's Ring Racers.zip", "Dr. Robotnik's Ring Racers"
+            ),
+            0.001
+        )
     }
 
     @Test
