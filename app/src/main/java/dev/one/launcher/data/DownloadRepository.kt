@@ -18,9 +18,11 @@ sealed class DownloadState {
 }
 
 /**
- * Downloads a file the user already owns in their Premiumize cloud, via
- * the `link` returned by /item/details, into the app's own Downloads/ONE
- * folder. Nothing is downloaded from anywhere else.
+ * Downloads a file into the app's own Downloads/ONE folder. Two sources
+ * only: a file the user already owns in their Premiumize cloud, via the
+ * `link` returned by /item/details; or a release APK the user explicitly
+ * tapped Download on, from the port project's own GitHub release.
+ * Nothing else is ever downloaded.
  */
 class DownloadRepository(private val context: Context) {
     private val client = OkHttpClient()

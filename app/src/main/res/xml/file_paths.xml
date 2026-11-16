@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- ONE's own Downloads/ONE folder (getExternalFilesDir(DOWNLOADS)/ONE),
+         shared with the system installer for a downloaded release APK. -->
+    <external-files-path name="downloads" path="Download/ONE/" />
+</paths>

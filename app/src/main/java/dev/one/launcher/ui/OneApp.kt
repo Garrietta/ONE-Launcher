@@ -85,6 +85,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
+import dev.one.launcher.data.MatchKind
 import dev.one.launcher.data.PortMatcher
 import dev.one.launcher.data.PortSettings
 import dev.one.launcher.data.PremiumizeItem
@@ -228,7 +229,10 @@ fun OneApp(viewModel: OneViewModel) {
                     }
                 }
                 composable(OneDestination.Cloud.route) {
-                    CloudScreen(viewModel = viewModel)
+                    CloudScreen(
+                        viewModel = viewModel,
+                        onOpenDetail = { id -> navController.navigate("detail/$id") }
+                    )
                 }
                 composable(OneDestination.Settings.route) {
                     SettingsScreen(viewModel = viewModel)
@@ -390,8 +394,17 @@ private fun GameDetailContent(
     val statuses by viewModel.portStatuses.collectAsState()
     val status = statuses[port.id]
     val launchError by viewModel.launchError.collectAsState()
+    val releaseStates by viewModel.releaseStates.collectAsState()
+    val releaseState = releaseStates[port.id]
+    val apkStates by viewModel.apkInstallStates.collectAsState()
+    val apkState = apkStates[port.id]
+    val extractMessages by viewModel.extractMessage.collectAsState()
     val settingsFlow = remember(port.id) { viewModel.settings(port.id) }
     val settings by settingsFlow.collectAsState(initial = PortSettings())
+
+    // Fetch the latest release when this detail page opens; the ViewModel
+    // caches per port for the session, so reopening does not re-hit GitHub.
+    LaunchedEffect(port.id) { viewModel.fetchRelease(port.id) }
 
     var fps by remember(settings) { mutableStateOf(settings.fpsCap) }
     var scale by remember(settings) { mutableStateOf(settings.resolutionScale) }
@@ -434,11 +447,21 @@ private fun GameDetailContent(
         }
 
         Spacer(modifier = Modifier.height(16.dp))
-        Text(text = "Your file", style = MaterialTheme.typography.titleMedium)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "Your file",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = { viewModel.refreshLibrary() }) {
+                Icon(Icons.Filled.Refresh, contentDescription = "Refresh matched files")
+            }
+        }
         Text(text = port.requiredDump, style = MaterialTheme.typography.bodyMedium)
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = "Accepted: ${port.fileExtensions.joinToString(", ")}",
+            text = "Accepted: ${port.fileExtensions.joinToString(", ")}; " +
+                "archives .zip, .7z, .rar are matched by name",
             style = MaterialTheme.typography.bodySmall
         )
         Text(
@@ -452,6 +475,38 @@ private fun GameDetailContent(
                 Icon(Icons.Filled.Check, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(text = assignedName, modifier = Modifier.weight(1f))
+            }
+            if (status?.downloadedFileName != null && status.assignedFile == null) {
+                when (status.downloadedMatchKind) {
+                    MatchKind.ARCHIVE_CONFIRMED -> {
+                        Text(
+                            text = "Archive — contains ${status.downloadedInnerEntry}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        OutlinedButton(
+                            onClick = { viewModel.extractMatchedArchive(port.id) }
+                        ) {
+                            Text("Extract ${status.downloadedInnerEntry} to Downloads/ONE")
+                        }
+                    }
+                    MatchKind.ARCHIVE_PROVISIONAL -> {
+                        Text(
+                            text = "Archive — likely contains your file. " +
+                                "Download it to this device and refresh to confirm " +
+                                "what is inside.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    else -> {}
+                }
+            }
+            val extractMessage = extractMessages[port.id]
+            if (extractMessage != null) {
+                Text(text = extractMessage, style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { viewModel.dismissExtractMessage(port.id) }) {
+                    Text("Dismiss")
+                }
             }
             if (status?.assignedFile != null) {
                 TextButton(onClick = { viewModel.clearAssignment(port.id) }) {
@@ -519,6 +574,122 @@ private fun GameDetailContent(
                 Text("View Releases")
             }
         }
+        // Latest release, fetched when this page opens (metadata only).
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(text = "Latest release", style = MaterialTheme.typography.titleMedium)
+        when (val release = releaseState) {
+            null, ReleaseState.Loading -> {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Checking the latest release…",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            is ReleaseState.Error -> {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(text = release.message, color = MaterialTheme.colorScheme.error)
+                TextButton(onClick = { viewModel.fetchRelease(port.id, force = true) }) {
+                    Text("Retry")
+                }
+            }
+            is ReleaseState.Loaded -> {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = if (release.installedVersion != null) {
+                        "Installed: ${release.installedVersion}"
+                    } else {
+                        "Not installed"
+                    },
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text(
+                    text = "Latest release: ${release.release.tag_name}",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                if (release.apk != null) {
+                    Text(
+                        text = "${release.apk.name} (${formatSize(release.apk.size)})",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                } else {
+                    Text(
+                        text = "No Android APK in the latest release.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+                if (release.updateAvailable) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Update available — ${release.installedVersion} → " +
+                            release.release.tag_name,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                } else if (release.installedVersion != null && release.apk != null) {
+                    Text(text = "Up to date", style = MaterialTheme.typography.bodyMedium)
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                if (apkState?.downloading == true) {
+                    LinearProgressIndicator(
+                        progress = { apkState.progress },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        text = "Downloading… ${(apkState.progress * 100).toInt()}%",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                } else if (apkState?.downloadedFile != null && release.apk != null) {
+                    Button(onClick = { viewModel.installApk(port.id) }) {
+                        Text("Install ${release.apk.name}")
+                    }
+                } else if (release.apk != null &&
+                    (release.installedVersion == null || release.updateAvailable)
+                ) {
+                    Button(onClick = { viewModel.downloadApk(port.id) }) {
+                        Icon(Icons.Filled.Download, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Download ${release.apk.name}")
+                    }
+                }
+                if (apkState?.blockedByUnknownSources == true) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Android blocked the install: ONE is not yet allowed " +
+                            "to install apps. Allow it in system settings, then " +
+                            "tap Install again.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    OutlinedButton(
+                        onClick = { viewModel.openUnknownSourcesSettings() }
+                    ) {
+                        Text("Open install settings")
+                    }
+                }
+                if (apkState?.error != null) {
+                    Text(text = apkState.error, color = MaterialTheme.colorScheme.error)
+                    TextButton(onClick = { viewModel.dismissApkError(port.id) }) {
+                        Text("Dismiss")
+                    }
+                }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { openUrl(context, port.releasesUrl) }) {
+                        Icon(Icons.Filled.OpenInNew, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("View Releases")
+                    }
+                    TextButton(
+                        onClick = { openUrl(context, release.release.html_url) }
+                    ) {
+                        Text("Release page")
+                    }
+                    TextButton(
+                        onClick = { viewModel.fetchRelease(port.id, force = true) }
+                    ) {
+                        Text("Check for updates")
+                    }
+                }
+            }
+        }
         if (port.notes.isNotBlank()) {
             Spacer(modifier = Modifier.height(8.dp))
             Text(text = port.notes, style = MaterialTheme.typography.bodySmall)
@@ -579,7 +750,10 @@ private fun GameDetailContent(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CloudScreen(viewModel: OneViewModel) {
+private fun CloudScreen(
+    viewModel: OneViewModel,
+    onOpenDetail: (String) -> Unit
+) {
     val account by viewModel.pmAccount.collectAsState()
     val connecting by viewModel.pmConnecting.collectAsState()
     val pmError by viewModel.pmError.collectAsState()
@@ -590,6 +764,7 @@ private fun CloudScreen(viewModel: OneViewModel) {
     val searchResults by viewModel.searchResults.collectAsState()
     val downloadProgress by viewModel.downloadProgress.collectAsState()
     val downloadError by viewModel.downloadError.collectAsState()
+    val confirmedArchives by viewModel.confirmedArchives.collectAsState()
 
     var apiKey by remember { mutableStateOf("") }
     var searchQuery by remember { mutableStateOf("") }
@@ -640,6 +815,9 @@ private fun CloudScreen(viewModel: OneViewModel) {
                     text = "Premium until ${formatPremiumUntil(account!!.premium_until)}",
                     style = MaterialTheme.typography.bodySmall
                 )
+            }
+            IconButton(onClick = { viewModel.refreshCloud() }) {
+                Icon(Icons.Filled.Refresh, contentDescription = "Refresh cloud")
             }
             OutlinedButton(onClick = { viewModel.disconnectPremiumize() }) {
                 Text("Disconnect")
@@ -735,8 +913,10 @@ private fun CloudScreen(viewModel: OneViewModel) {
                     item = item,
                     ports = viewModel.ports,
                     progress = downloadProgress[item.id],
+                    confirmedArchives = confirmedArchives,
                     onOpenFolder = { viewModel.openFolder(item) },
-                    onDownload = { viewModel.downloadItem(item) }
+                    onDownload = { viewModel.downloadItem(item) },
+                    onOpenDetail = onOpenDetail
                 )
             }
         }
@@ -748,8 +928,10 @@ private fun CloudItemRow(
     item: PremiumizeItem,
     ports: List<Port>,
     progress: Float?,
+    confirmedArchives: Map<String, Map<String, String>>,
     onOpenFolder: () -> Unit,
-    onDownload: () -> Unit
+    onDownload: () -> Unit,
+    onOpenDetail: (String) -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -786,14 +968,31 @@ private fun CloudItemRow(
                 }
             }
             if (item.type != "folder") {
-                val matches = PortMatcher.matchingPorts(item.name, ports)
+                val matches = PortMatcher.matchKinds(item.name, ports)
                 if (matches.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Row {
                         matches.forEach { match ->
+                            val label = when (match.kind) {
+                                MatchKind.DIRECT -> "Matches ${match.port.title}"
+                                MatchKind.ARCHIVE_PROVISIONAL -> {
+                                    // Already downloaded and confirmed on
+                                    // this device? Say what it contains.
+                                    val entry =
+                                        confirmedArchives[item.name]?.get(match.port.id)
+                                    if (entry != null) {
+                                        "Matches ${match.port.title} " +
+                                            "(contains .${entry.substringAfterLast('.', "")})"
+                                    } else {
+                                        "Matches ${match.port.title} (archive)"
+                                    }
+                                }
+                                MatchKind.ARCHIVE_CONFIRMED ->
+                                    "Matches ${match.port.title} (archive)"
+                            }
                             AssistChip(
-                                onClick = {},
-                                label = { Text("Matches ${match.title}") }
+                                onClick = { onOpenDetail(match.port.id) },
+                                label = { Text(label) }
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                         }
@@ -826,6 +1025,8 @@ private fun CloudItemRow(
 @Composable
 private fun SettingsScreen(viewModel: OneViewModel) {
     val account by viewModel.pmAccount.collectAsState()
+    val statuses by viewModel.portStatuses.collectAsState()
+    val assignedFiles by viewModel.assignedFiles.collectAsState()
     var message by remember { mutableStateOf<String?>(null) }
 
     Column(
@@ -850,6 +1051,36 @@ private fun SettingsScreen(viewModel: OneViewModel) {
         Spacer(modifier = Modifier.height(16.dp))
 
         Text(text = "Matched files", style = MaterialTheme.typography.titleMedium)
+        val matchedRows = viewModel.ports.mapNotNull { port ->
+            val status = statuses[port.id]
+            val name = assignedFiles[port.id]?.name ?: status?.downloadedFileName
+            if (name == null) null else port to name
+        }
+        if (matchedRows.isEmpty()) {
+            Text(
+                text = "No files matched yet. Pick a file on a game's detail " +
+                    "page, or pull one from your cloud.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        } else {
+            matchedRows.forEach { (port, name) ->
+                val status = statuses[port.id]
+                val detail = when {
+                    assignedFiles[port.id] != null -> "picked file"
+                    status?.downloadedMatchKind == MatchKind.ARCHIVE_CONFIRMED ->
+                        "archive — contains ${status.downloadedInnerEntry}"
+                    status?.downloadedMatchKind == MatchKind.ARCHIVE_PROVISIONAL ->
+                        "archive (likely match)"
+                    status?.downloadedMatchKind == MatchKind.DIRECT -> "downloaded file"
+                    else -> "matched file"
+                }
+                Text(
+                    text = "${port.title} — $name ($detail)",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
         OutlinedButton(
             onClick = {
                 viewModel.clearAllAssignments()
@@ -885,7 +1116,7 @@ private fun SettingsScreen(viewModel: OneViewModel) {
 
         Spacer(modifier = Modifier.height(24.dp))
         Text(text = "About", style = MaterialTheme.typography.titleMedium)
-        Text(text = "ONE 1.0.0 (debug build)", style = MaterialTheme.typography.bodyMedium)
+        Text(text = "ONE 1.1.0 (debug build)", style = MaterialTheme.typography.bodyMedium)
         Spacer(modifier = Modifier.height(8.dp))
         Text(
             text = viewModel.catalogNote,

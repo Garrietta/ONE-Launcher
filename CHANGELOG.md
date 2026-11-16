@@ -1,5 +1,48 @@
 # Changelog
 
+## v1.1.0 — 2026-11-15
+
+Archive matching, refresh controls, a visible paired-files list, and a
+GitHub release update manager on each port's detail page.
+
+- Archive matching: `.zip`, `.7z`, and `.rar` files now match a port when
+  their base name contains one of the port's filename hints, so
+  "Legend of Zelda, The - Ocarina of Time (USA).zip" matches Ship of
+  Harkinian. A downloaded `.zip` is confirmed by inspecting its entries
+  locally (`java.util.zip.ZipFile`): the detail page shows which ROM it
+  contains, and a single-entry "Extract" button pulls just that ROM into
+  `Downloads/ONE`. `.7z`/`.rar` stay provisional (no inspection, no 7z
+  library). Direct ROM matching is unchanged.
+- Cloud rows show the "Matches \<port\>" chip for archives too —
+  "(archive)" for a name-only match, "(contains .z64)" once the zip has
+  been downloaded and confirmed — and tapping the chip opens that port's
+  detail page.
+- Refresh controls: a Refresh button on the Cloud screen re-runs the
+  current folder browse (or the active search), and a Refresh action on
+  the detail page re-runs `refreshLibrary()` (re-scanning `Downloads/ONE`
+  and zip contents). The Library refresh icon already did this.
+- Settings "Matched files" now lists the currently matched files per
+  port (name + port + how it matched) instead of only a Clear button.
+  Clear still works as before.
+- GitHub release update manager (detail page only): the "Latest release"
+  block fetches `releases/latest` for the port's repo when the page
+  opens (metadata only, cached per port for the session, plain error +
+  Retry on failure — never a crash, never blocking the rest of the page).
+  It shows the installed version, the latest tag, the picked Android APK
+  (.apk assets only, preferring a name containing "android"), "Update
+  available" when the tag is newer than the installed version
+  (numeric-core comparison, leading "v" and "-android.x" suffix stripped),
+  "Up to date" otherwise, and "No Android APK in the latest release" when
+  the release ships none — so Zelda 64: Recompiled and Zelda3 stay
+  honest catalog/file-match entries. Download fetches the APK into
+  `Downloads/ONE` and hands it to the system installer via FileProvider;
+  if installs from unknown sources are not yet allowed, the page explains
+  and opens the system settings screen. Nothing installs silently, and
+  nothing auto-downloads on page open.
+- Known limits: no update check on the Library list yet (detail page
+  only); archive confirmation needs the zip on the device — a zip still
+  only in the cloud is a provisional name match.
+
 ## v1.0.2 — 2026-11-15
 
 Launch crash fix (second crash, different from v1.0.1).
