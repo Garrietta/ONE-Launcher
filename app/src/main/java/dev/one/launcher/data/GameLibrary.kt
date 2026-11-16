@@ -42,7 +42,7 @@ fun gameKey(title: String, platform: String): String =
 
 private fun slugify(text: String): String =
     text.lowercase()
-        .replace(Regex("[^a-z0-9]+"), "-")
+        .replace(NON_ALNUM_REGEX, "-")
         .trim('-')
 
 fun findGame(games: List<GameEntry>, key: String): GameEntry? =
@@ -484,61 +484,6 @@ fun rankPortsByStars(
             .thenBy { it.title.lowercase() }
     )
 
-/**
- * The set of game keys with at least one matching file, for the
- * Library's "Games with matches" filter. One pass over the files: a
- * port counts as matched when any file (cloud, server, or local)
- * matches it, and a game counts when any of its ports is matched.
- * Uses the same game-level matching as the game page — no second
- * matcher. The cloud side mirrors the game page: the flat listAll
- * when present, else the per-port search fallbacks.
- */
-fun gamesWithFiles(
-    games: List<GameEntry>,
-    cloudItems: List<PremiumizeItem>,
-    cloudFallback: Map<String, List<PremiumizeItem>>,
-    serverSources: List<Pair<String, List<RemoteEntry>>>,
-    detected: Map<String, List<DetectedFile>>,
-    localStates: Map<String, LocalFileState>
-): Set<String> {
-    val ports = games.flatMap { it.ports }
-    val matchedPorts = mutableSetOf<String>()
-    val cloud = if (cloudItems.isNotEmpty()) {
-        cloudItems
-    } else {
-        games.flatMap { game ->
-            game.ports.flatMap { cloudFallback[it.id].orEmpty() }
-        }
-    }
-    for (item in cloud) {
-        if (item.type == "folder") continue
-        for (match in PortMatcher.matchKinds(item.name, ports, item.link)) {
-            matchedPorts.add(match.port.id)
-        }
-    }
-    for ((_, entries) in serverSources) {
-        for (entry in entries) {
-            if (entry.isFolder) continue
-            if (entry.isMagnet) continue
-            for (match in PortMatcher.matchKinds(entry.name, ports, entry.url)) {
-                matchedPorts.add(match.port.id)
-            }
-        }
-    }
-    for ((portId, files) in detected) {
-        if (files.isNotEmpty()) matchedPorts.add(portId)
-    }
-    for ((portId, state) in localStates) {
-        if (state.downloadedFileName != null || state.assignedFileName != null) {
-            matchedPorts.add(portId)
-        }
-    }
-    return games
-        .filter { game -> game.ports.any { it.id in matchedPorts } }
-        .map { it.key }
-        .toSet()
-}
-
 // ---- Library filter state (v1.8.2) ----
 
 /**
@@ -639,7 +584,251 @@ fun posterStatusText(
     else -> "Not installed"
 }
 
-// ---- Full pairing computation (v1.8.2) ----
+// ---- Full pairing computation (v1.8.2; indexed v1.8.7) ----
+
+/**
+ * One server entry matched to a port by the indexed pass, before
+ * grouping by game. Carries the source name so the grouped file
+ * keeps the feed it came from, and the source/entry position so the
+ * magnet grouping can restore the original source/entry order (the
+ * magnet dedup uses candidate order as a tiebreaker).
+ */
+private data class IndexedServerMatch(
+    val entry: RemoteEntry,
+    val port: Port,
+    val kind: MatchKind,
+    val sourceName: String,
+    val sourceIndex: Int,
+    val entryIndex: Int
+)
+
+/**
+ * Match all server entries against all ports once, via the token
+ * index (v1.8.7). Returns port id -> matches. Identical results to
+ * testing every (entry, port) pair — the index only skips ports
+ * that cannot match, and every candidate is still verified by the
+ * unchanged [PortMatcher.matchKind].
+ */
+private fun matchAllServerEntries(
+    sources: List<Pair<String, List<RemoteEntry>>>,
+    index: PortIndex
+): Map<String, List<IndexedServerMatch>> {
+    val byPort = mutableMapOf<String, MutableList<IndexedServerMatch>>()
+    for ((sourceIndex, source) in sources.withIndex()) {
+        val (sourceName, entries) = source
+        for ((entryIndex, entry) in entries.withIndex()) {
+            if (entry.isFolder || entry.isMagnet) continue
+            for (port in index.candidatesFor(entry.name)) {
+                val kind = PortMatcher.matchKind(entry.name, port, entry.url) ?: continue
+                byPort.getOrPut(port.id) { mutableListOf() }
+                    .add(
+                        IndexedServerMatch(
+                            entry, port, kind, sourceName, sourceIndex, entryIndex
+                        )
+                    )
+            }
+        }
+    }
+    return byPort
+}
+
+/**
+ * One cloud item matched to a port by the indexed pass, before
+ * grouping by game.
+ */
+private data class IndexedCloudMatch(
+    val item: PremiumizeItem,
+    val port: Port,
+    val kind: MatchKind
+)
+
+/**
+ * Match the flat cloud list (listAll) against all ports once, via
+ * the token index (v1.8.7). Returns port id -> matches. Identical
+ * results to testing every (item, port) pair.
+ */
+private fun matchAllCloudItems(
+    items: List<PremiumizeItem>,
+    index: PortIndex
+): Map<String, List<IndexedCloudMatch>> {
+    val byPort = mutableMapOf<String, MutableList<IndexedCloudMatch>>()
+    for (item in items) {
+        if (item.type == "folder") continue
+        for (port in index.candidatesFor(item.name)) {
+            val kind = PortMatcher.matchKind(item.name, port, item.link) ?: continue
+            byPort.getOrPut(port.id) { mutableListOf() }
+                .add(IndexedCloudMatch(item, port, kind))
+        }
+    }
+    return byPort
+}
+
+/**
+ * One magnet entry matched to a port by the indexed pass, before
+ * grouping by game. Carries the source/entry position so the
+ * grouping can restore the original source/entry order (the magnet
+ * dedup uses candidate order as a tiebreaker, and the URL dedup
+ * keeps the first in source order).
+ */
+private data class IndexedMagnetMatch(
+    val entry: RemoteEntry,
+    val port: Port,
+    val kind: MatchKind,
+    val sourceName: String,
+    val sourceIndex: Int,
+    val entryIndex: Int
+)
+
+/**
+ * Match all magnet entries against all ports once, via the token
+ * index (v1.8.7). Returns port id -> matches. The URL dedup is NOT
+ * done here — it is per-game (the same magnet URL may legitimately
+ * match two different games), so it runs in the per-game grouping
+ * below. Identical results to testing every (entry, port) pair.
+ */
+private fun matchAllMagnets(
+    sources: List<Pair<String, List<RemoteEntry>>>,
+    index: PortIndex
+): Map<String, List<IndexedMagnetMatch>> {
+    val byPort = mutableMapOf<String, MutableList<IndexedMagnetMatch>>()
+    for ((sourceIndex, source) in sources.withIndex()) {
+        val (sourceName, entries) = source
+        for ((entryIndex, entry) in entries.withIndex()) {
+            if (entry.isFolder || !entry.isMagnet) continue
+            for (port in index.candidatesFor(entry.name)) {
+                val kind = PortMatcher.matchMagnetKind(entry, port) ?: continue
+                byPort.getOrPut(port.id) { mutableListOf() }
+                    .add(
+                        IndexedMagnetMatch(
+                            entry, port, kind, sourceName, sourceIndex, entryIndex
+                        )
+                    )
+            }
+        }
+    }
+    return byPort
+}
+
+/**
+ * A game's server files from the indexed pass. Ports are walked in
+ * game order and each entry is claimed once, by the first port in
+ * that order that matched it — the same attribution as the per-game
+ * scan ([matchServerFilesForGame]). The result order does not matter
+ * (the caller dedupes by name and sorts), so no reordering is done.
+ */
+private fun serverFilesForGame(
+    byPort: Map<String, List<IndexedServerMatch>>,
+    ports: List<Port>
+): List<GameFile> {
+    val out = mutableListOf<GameFile>()
+    val claimed = mutableSetOf<String>()
+    for (port in ports) {
+        for (m in byPort[port.id].orEmpty()) {
+            // The same entry in two sources is two files (different
+            // `where`); within one source the parser already dedupes
+            // by URL, so the key only needs to separate sources.
+            val key = "${m.sourceIndex}\n${m.entry.url}\n${m.entry.name}"
+            if (!claimed.add(key)) continue
+            out.add(
+                GameFile(
+                    name = m.entry.name,
+                    kind = m.kind,
+                    source = GameFileSource.SERVER,
+                    portId = port.id,
+                    where = m.sourceName,
+                    remoteSourceName = m.sourceName,
+                    remoteUrl = m.entry.url
+                )
+            )
+        }
+    }
+    return out
+}
+
+/**
+ * A game's cloud files from the indexed pass. Same first-port-in-
+ * game-order attribution as [matchCloudFilesForGame].
+ */
+private fun cloudFilesForGame(
+    byPort: Map<String, List<IndexedCloudMatch>>,
+    ports: List<Port>
+): List<GameFile> {
+    val out = mutableListOf<GameFile>()
+    val claimed = mutableSetOf<String>()
+    for (port in ports) {
+        for (m in byPort[port.id].orEmpty()) {
+            val key = m.item.id.ifBlank { m.item.name + "\n" + (m.item.link ?: "") }
+            if (!claimed.add(key)) continue
+            out.add(
+                GameFile(
+                    name = m.item.name,
+                    kind = m.kind,
+                    source = GameFileSource.CLOUD,
+                    portId = port.id,
+                    where = "Premiumize",
+                    premiumizeItem = m.item
+                )
+            )
+        }
+    }
+    return out
+}
+
+/**
+ * A game's magnet links from the indexed pass. Ports are walked in
+ * game order and each magnet URL is claimed once, by the first port
+ * in that order that matched it; the claimed candidates are then
+ * restored to source/entry order (the order the per-game scan
+ * produced) before the URL dedup and the cleaned-name dedup, so the
+ * tiebreakers in [dedupeMagnetLinks] pick the same entry as before.
+ * The result is ordered by name, as [matchMagnetLinksForGame].
+ */
+private fun magnetLinksForGame(
+    byPort: Map<String, List<IndexedMagnetMatch>>,
+    ports: List<Port>
+): List<GameMagnetLink> {
+    val claimed = mutableListOf<IndexedMagnetMatch>()
+    val claimedUrls = mutableSetOf<String>()
+    for (port in ports) {
+        for (m in byPort[port.id].orEmpty()) {
+            // Claim by URL here would be wrong: the same URL in two
+            // sources is one link, and the first in source order
+            // wins — but the claim order here is port order. So
+            // collect all claimed matches first, restore source
+            // order, then dedupe by URL below.
+            claimed.add(m)
+        }
+    }
+    // Restore the per-game scan's order (source, then entry), so the
+    // URL dedup and the cleaned-name dedup tiebreak identically.
+    // The first-port attribution is already fixed: each (entry, port)
+    // pair is in the list once per matching port, and the URL dedup
+    // below keeps the first in this order — which, for a URL matching
+    // two ports of the game, is the one from the first port in game
+    // order, because the claim above walks ports in game order and
+    // the sort below is stable.
+    val ordered = claimed.sortedWith(
+        compareBy<IndexedMagnetMatch> { it.sourceIndex }
+            .thenBy { it.entryIndex }
+    )
+    val candidates = mutableListOf<MagnetMatch>()
+    for (m in ordered) {
+        if (!claimedUrls.add(m.entry.url)) continue
+        candidates.add(MagnetMatch(m.entry, m.port, m.kind, m.sourceName))
+    }
+    return dedupeMagnetLinks(candidates)
+        .map { candidate ->
+            GameMagnetLink(
+                name = candidate.entry.name,
+                magnetUrl = candidate.entry.url,
+                kind = candidate.kind,
+                portId = candidate.port.id,
+                where = candidate.sourceName,
+                remoteSourceName = candidate.sourceName
+            )
+        }
+        .sortedBy { it.name.lowercase() }
+}
 
 /**
  * The full pairing computation: every game's matched files, from all
@@ -651,6 +840,16 @@ fun posterStatusText(
  * listAll when present, else the per-port search fallbacks. Pure, so
  * the background refresh can run it on a background thread and the
  * cache round-trip is unit-testable.
+ *
+ * Indexed (v1.8.7): the flat cloud list and all server entries are
+ * matched once against all ports through the token index
+ * ([PortIndex]) instead of once per game — the old per-game scan
+ * tested every entry against every port of every game (~14M
+ * matchKind calls per refresh). The per-port cloud fallback (only
+ * when listAll is empty) and the local files are small, so they
+ * keep the per-game scan. Results are identical to the old scan
+ * (the index only skips ports that cannot match; every candidate
+ * is still verified by the unchanged matcher).
  */
 fun pairGamesWithFiles(
     games: List<GameEntry>,
@@ -660,17 +859,22 @@ fun pairGamesWithFiles(
     detected: Map<String, List<DetectedFile>>,
     localStates: Map<String, LocalFileState>
 ): Map<String, List<GameFile>> {
+    val allPorts = games.flatMap { it.ports }
+    val index = PortIndex(allPorts)
+    val cloudByPort: Map<String, List<IndexedCloudMatch>> =
+        if (cloudItems.isNotEmpty()) matchAllCloudItems(cloudItems, index) else emptyMap()
+    val serverByPort = matchAllServerEntries(serverSources, index)
     val out = mutableMapOf<String, List<GameFile>>()
     for (game in games) {
-        val cloud = matchCloudFilesForGame(
-            if (cloudItems.isNotEmpty()) {
-                cloudItems
-            } else {
-                game.ports.flatMap { cloudFallback[it.id].orEmpty() }
-            },
-            game.ports
-        )
-        val server = matchServerFilesForGame(serverSources, game.ports)
+        val cloud = if (cloudItems.isNotEmpty()) {
+            cloudFilesForGame(cloudByPort, game.ports)
+        } else {
+            matchCloudFilesForGame(
+                game.ports.flatMap { cloudFallback[it.id].orEmpty() },
+                game.ports
+            )
+        }
+        val server = serverFilesForGame(serverByPort, game.ports)
         val local = matchLocalFilesForGame(detected, localStates, game.ports)
         val files = dedupeGameFiles(local + cloud + server)
         if (files.isNotEmpty()) out[game.key] = files
@@ -679,21 +883,26 @@ fun pairGamesWithFiles(
 }
 
 /**
- * The magnet pairing computation (v1.8.3): every game's matched
- * magnet links, from the remote folders only (magnets only ever come
- * from a remote folder's JSON list). Pure, so the background refresh
- * can run it alongside [pairGamesWithFiles] and the cache round-trip
- * is unit-testable. Only games with at least one magnet are present.
- * Magnet pairings are a separate channel from the downloadable-file
- * pairings — they never feed "Has files" or "Your files".
+ * The magnet pairing computation (v1.8.3; indexed v1.8.7): every
+ * game's matched magnet links, from the remote folders only (magnets
+ * only ever come from a remote folder's JSON list). Pure, so the
+ * background refresh can run it alongside [pairGamesWithFiles] and
+ * the cache round-trip is unit-testable. Only games with at least one
+ * magnet are present. Magnet pairings are a separate channel from the
+ * downloadable-file pairings — they never feed "Has files" or "Your
+ * files". Indexed the same way as the file pairing: all magnets are
+ * matched once through the token index, then grouped by game.
  */
 fun pairGamesWithMagnets(
     games: List<GameEntry>,
     serverSources: List<Pair<String, List<RemoteEntry>>>
 ): Map<String, List<GameMagnetLink>> {
+    val allPorts = games.flatMap { it.ports }
+    val index = PortIndex(allPorts)
+    val magnetByPort = matchAllMagnets(serverSources, index)
     val out = mutableMapOf<String, List<GameMagnetLink>>()
     for (game in games) {
-        val magnets = matchMagnetLinksForGame(serverSources, game.ports)
+        val magnets = magnetLinksForGame(magnetByPort, game.ports)
         if (magnets.isNotEmpty()) out[game.key] = magnets
     }
     return out

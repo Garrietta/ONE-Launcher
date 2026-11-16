@@ -5,8 +5,10 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -75,7 +77,9 @@ class RemoteFoldersStore(private val context: Context) {
  * removed.
  */
 class RemoteFolderCredentials(context: Context) {
-    private val prefs = run {
+    // Lazy (v1.8.7): creating EncryptedSharedPreferences touches the
+    // AndroidKeyStore and does disk I/O. All reads/writes run on IO.
+    private val prefs by lazy {
         val masterKey = MasterKey.Builder(context)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()
@@ -88,20 +92,24 @@ class RemoteFolderCredentials(context: Context) {
         )
     }
 
-    fun load(sourceId: String): Pair<String, String>? {
-        val username = prefs.getString("remote_${sourceId}_username", null) ?: return null
-        val password = prefs.getString("remote_${sourceId}_password", null) ?: return null
-        return username to password
-    }
+    suspend fun load(sourceId: String): Pair<String, String>? =
+        withContext(Dispatchers.IO) {
+            val username =
+                prefs.getString("remote_${sourceId}_username", null) ?: return@withContext null
+            val password =
+                prefs.getString("remote_${sourceId}_password", null) ?: return@withContext null
+            username to password
+        }
 
-    fun save(sourceId: String, username: String, password: String) {
-        prefs.edit()
-            .putString("remote_${sourceId}_username", username)
-            .putString("remote_${sourceId}_password", password)
-            .apply()
-    }
+    suspend fun save(sourceId: String, username: String, password: String) =
+        withContext(Dispatchers.IO) {
+            prefs.edit()
+                .putString("remote_${sourceId}_username", username)
+                .putString("remote_${sourceId}_password", password)
+                .apply()
+        }
 
-    fun clear(sourceId: String) {
+    suspend fun clear(sourceId: String) = withContext(Dispatchers.IO) {
         prefs.edit()
             .remove("remote_${sourceId}_username")
             .remove("remote_${sourceId}_password")

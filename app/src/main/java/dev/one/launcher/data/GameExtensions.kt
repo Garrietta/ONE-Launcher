@@ -1,6 +1,15 @@
 package dev.one.launcher.data
 
 /**
+ * Hoisted regexes (v1.8.7): [platformTagFromFileName] ran inside the
+ * matcher hot path, compiling both patterns on every call. Hoisted
+ * to top-level constants; a compiled Regex is immutable and
+ * thread-safe.
+ */
+private val PAREN_GROUP_REGEX = Regex("\\(([^)]*)\\)")
+private val WHITESPACE_HYPHEN_REGEX = Regex("[\\s\\-]+")
+
+/**
  * Platform -> game-file extensions dictionary (v1.6.1). The single
  * source of truth for "is this a game file".
  *
@@ -269,13 +278,13 @@ val PLATFORM_FILENAME_TAGS: Map<String, String> = mapOf(
  */
 fun platformTagFromFileName(fileName: String, gameTitle: String? = null): String? {
     val titleGroups = gameTitle?.let { title ->
-        Regex("\\(([^)]*)\\)").findAll(title)
-            .map { it.groupValues[1].lowercase().replace(Regex("[\\s\\-]+"), "") }
+        PAREN_GROUP_REGEX.findAll(title)
+            .map { it.groupValues[1].lowercase().replace(WHITESPACE_HYPHEN_REGEX, "") }
             .toSet()
     }.orEmpty()
-    for (match in Regex("\\(([^)]*)\\)").findAll(fileName)) {
+    for (match in PAREN_GROUP_REGEX.findAll(fileName)) {
         val key = match.groupValues[1].lowercase()
-            .replace(Regex("[\\s\\-]+"), "")
+            .replace(WHITESPACE_HYPHEN_REGEX, "")
         if (key in titleGroups) continue
         val platform = PLATFORM_FILENAME_TAGS[key]
         if (platform != null) return platform

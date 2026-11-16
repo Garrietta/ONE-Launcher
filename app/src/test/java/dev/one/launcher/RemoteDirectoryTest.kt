@@ -10,6 +10,8 @@ import dev.one.launcher.data.normalizeRemoteFolderUrl
 import dev.one.launcher.data.parseDirectoryListing
 import dev.one.launcher.data.parsePlainFileList
 import dev.one.launcher.data.parseRemoteBody
+import dev.one.launcher.data.parseRemoteStream
+import kotlinx.serialization.ExperimentalSerializationApi
 import okhttp3.Credentials
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -17,6 +19,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+@OptIn(ExperimentalSerializationApi::class)
 class RemoteDirectoryTest {
 
     private val apacheListing = """
@@ -371,5 +374,177 @@ class RemoteDirectoryTest {
         assertNull(normalizeRemoteFolderUrl("javascript:alert(1)"))
         assertNull(normalizeRemoteFolderUrl(""))
         assertNull(normalizeRemoteFolderUrl("http://"))
+    }
+
+    // ---- Streaming JSON (v1.8.7) ----
+    //
+    // The feed is decoded straight into a DTO list (String path) or
+    // straight from the response byte stream (stream path) — no
+    // intermediate whole-body String, no JsonObject DOM. These tests
+    // prove the streamed paths produce the identical RemoteEntry
+    // list as the old DOM walk, on the real snapshot resource and on
+    // a tricky feed, and that malformed input still errors, never
+    // crashes.
+
+    private fun snapshotText(): String {
+        val stream = javaClass.classLoader
+            ?.getResourceAsStream("remote-2026-11-16.json")
+        requireNotNull(stream) { "test resource remote-2026-11-16.json missing" }
+        return stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+    }
+
+    private fun snapshotStream(): java.io.InputStream {
+        val stream = javaClass.classLoader
+            ?.getResourceAsStream("remote-2026-11-16.json")
+        requireNotNull(stream) { "test resource remote-2026-11-16.json missing" }
+        return stream
+    }
+
+    @Test
+    fun snapshotFeedDecodesIdenticallyFromStringAndStream() {
+        // The v1.6.1 snapshot: 376 entries, every one a plain
+        // {name, url, category} object, no magnets, no sizes.
+        val fromString = parsePlainFileList(
+            "http://192.168.1.10/list.json", snapshotText()
+        )
+        assertTrue(fromString is RemoteListingResult.Listing)
+        val stringEntries = (fromString as RemoteListingResult.Listing).entries
+        assertEquals(376, stringEntries.size)
+
+        val fromStream = parsePlainFileList(
+            "http://192.168.1.10/list.json", snapshotStream()
+        )
+        assertTrue(fromStream is RemoteListingResult.Listing)
+        val streamEntries = (fromStream as RemoteListingResult.Listing).entries
+        // The stream path must produce the identical list.
+        assertEquals(stringEntries, streamEntries)
+
+        // The list is sorted by lowercase name, first and last pinned.
+        assertEquals(
+            stringEntries.map { it.name.lowercase() }.sorted(),
+            stringEntries.map { it.name.lowercase() }
+        )
+        val first = stringEntries.first()
+        assertEquals("3DS Content in CIA Format", first.name)
+        assertEquals("https://hshop.erista.me/", first.url)
+        assertEquals("Nintendo 3DS", first.category)
+        assertNull(first.kind)
+        assertNull(first.sizeBytes)
+        assertFalse(first.isFolder)
+        assertFalse(first.isMagnet)
+        val tosec = stringEntries.first { it.name == "[TOSEC-ISO] 3DO" }
+        assertEquals("https://archive.org/download/tosec-iso-3do", tosec.url)
+        assertEquals("ROM Sets", tosec.category)
+        val last = stringEntries.last()
+        assertEquals("Xenoblade Chronicles X (Wii U) (USA)", last.name)
+        assertEquals("Xenoblade", last.category)
+        // Every entry is a plain file entry with a usable name/url.
+        assertTrue(stringEntries.all { it.name.isNotBlank() && it.url.isNotBlank() })
+        assertTrue(stringEntries.none { it.isFolder })
+    }
+
+    @Test
+    fun streamParseMatchesStringParseOnTrickyFeed() {
+        // Wrong-typed values, missing fields, a magnet, a relative
+        // URL, an unknown extra field: the stream path must skip
+        // exactly the entries the String path skips.
+        val feed = """
+            [
+              {"name": "a.zip", "url": "http://192.168.1.10/a.zip", "size": 123, "extra": true},
+              {"name": "b.bin", "url": "/b.bin", "size": "big"},
+              {"name": "c.bin", "url": "/c.bin", "size": -5},
+              {"name": "d.bin", "url": "/d.bin", "kind": "magnet"},
+              {"name": 42, "url": "http://192.168.1.10/number.zip"},
+              {"name": "no-url"},
+              {"url": "http://192.168.1.10/no-name.zip"},
+              {"name": "", "url": "http://192.168.1.10/blank.zip"}
+            ]
+        """.trimIndent()
+        val fromString = parsePlainFileList("http://192.168.1.10/list.json", feed)
+        val fromStream = parsePlainFileList(
+            "http://192.168.1.10/list.json",
+            feed.toByteArray(Charsets.UTF_8).inputStream()
+        )
+        assertTrue(fromString is RemoteListingResult.Listing)
+        assertTrue(fromStream is RemoteListingResult.Listing)
+        val stringEntries = (fromString as RemoteListingResult.Listing).entries
+        val streamEntries = (fromStream as RemoteListingResult.Listing).entries
+        assertEquals(stringEntries, streamEntries)
+        assertEquals(
+            listOf("a.zip", "b.bin", "c.bin", "d.bin"),
+            streamEntries.map { it.name }
+        )
+        assertEquals(123L, streamEntries[0].sizeBytes)
+        assertNull(streamEntries[1].sizeBytes)
+        assertNull(streamEntries[2].sizeBytes)
+        assertTrue(streamEntries[3].isMagnet)
+    }
+
+    @Test
+    fun streamParseRejectsMalformedJson() {
+        assertTrue(
+            parsePlainFileList(
+                "http://192.168.1.10/list.json",
+                "not json at all".toByteArray(Charsets.UTF_8).inputStream()
+            ) is RemoteListingResult.Error
+        )
+        assertTrue(
+            parsePlainFileList(
+                "http://192.168.1.10/list.json",
+                "".toByteArray(Charsets.UTF_8).inputStream()
+            ) is RemoteListingResult.Error
+        )
+        // A JSON object (a catalog shape) is not a file list.
+        assertTrue(
+            parsePlainFileList(
+                "http://192.168.1.10/list.json",
+                """{"categories": []}""".toByteArray(Charsets.UTF_8).inputStream()
+            ) is RemoteListingResult.Error
+        )
+    }
+
+    @Test
+    fun remoteStreamSniffsJsonVsHtml() {
+        // JSON bytes go down the JSON path, straight from the stream.
+        val jsonResult = parseRemoteStream(
+            "http://192.168.1.10/list.json",
+            """[{"name": "a.zip", "url": "http://192.168.1.10/a.zip"}]"""
+                .toByteArray(Charsets.UTF_8).inputStream()
+        )
+        assertTrue(jsonResult is RemoteListingResult.Listing)
+        assertEquals(
+            listOf("a.zip"),
+            (jsonResult as RemoteListingResult.Listing).entries.map { it.name }
+        )
+        // Leading whitespace before the "[" is sniffed past.
+        val paddedResult = parseRemoteStream(
+            "http://192.168.1.10/list.json",
+            "  \n\t [{\"name\": \"b.zip\", \"url\": \"/b.zip\"}]"
+                .toByteArray(Charsets.UTF_8).inputStream()
+        )
+        assertTrue(paddedResult is RemoteListingResult.Listing)
+        assertEquals(
+            listOf("b.zip"),
+            (paddedResult as RemoteListingResult.Listing).entries.map { it.name }
+        )
+        // HTML bytes go down the directory-listing path.
+        val htmlResult = parseRemoteStream(
+            "http://192.168.1.10/files/",
+            apacheListing.toByteArray(Charsets.UTF_8).inputStream()
+        )
+        assertTrue(htmlResult is RemoteListingResult.Listing)
+        assertEquals(3, (htmlResult as RemoteListingResult.Listing).entries.size)
+        // A web-app shell is refused, and an empty body errors —
+        // never a crash, never entries.
+        val shellResult = parseRemoteStream(
+            "http://192.168.1.10/",
+            reactAppShell.toByteArray(Charsets.UTF_8).inputStream()
+        )
+        assertTrue(shellResult is RemoteListingResult.Error)
+        val emptyResult = parseRemoteStream(
+            "http://192.168.1.10/list.json",
+            "".toByteArray(Charsets.UTF_8).inputStream()
+        )
+        assertTrue(emptyResult is RemoteListingResult.Error)
     }
 }

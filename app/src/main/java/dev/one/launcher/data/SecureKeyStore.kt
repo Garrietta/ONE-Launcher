@@ -3,14 +3,21 @@ package dev.one.launcher.data
 import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Holds the user's Premiumize API key in EncryptedSharedPreferences.
  * The key is never logged, never written to a plain file, and never
  * leaves the device except in requests to premiumize.me.
+ *
+ * The EncryptedSharedPreferences instance is lazy (v1.8.7): creating
+ * it touches the AndroidKeyStore and does disk I/O, which delayed the
+ * first Compose frame when it ran in the ViewModel constructor on the
+ * main thread. All reads/writes run on Dispatchers.IO.
  */
 class SecureKeyStore(context: Context) {
-    private val prefs = run {
+    private val prefs by lazy {
         val masterKey = MasterKey.Builder(context)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()
@@ -23,13 +30,15 @@ class SecureKeyStore(context: Context) {
         )
     }
 
-    fun getApiKey(): String? = prefs.getString(KEY_API_KEY, null)
+    suspend fun getApiKey(): String? = withContext(Dispatchers.IO) {
+        prefs.getString(KEY_API_KEY, null)
+    }
 
-    fun saveApiKey(key: String) {
+    suspend fun saveApiKey(key: String) = withContext(Dispatchers.IO) {
         prefs.edit().putString(KEY_API_KEY, key).apply()
     }
 
-    fun clear() {
+    suspend fun clear() = withContext(Dispatchers.IO) {
         prefs.edit().clear().apply()
     }
 

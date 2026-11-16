@@ -4,12 +4,15 @@ import android.content.Context
 import dev.one.launcher.model.Port
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromStream
+import kotlinx.serialization.json.encodeToStream
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.io.InputStream
 
 /**
  * Fetches the Recompa catalog index (https://recompa.app/index.json)
@@ -23,6 +26,7 @@ import java.io.File
  * Signer verification is a follow-up, not this round: the catalog's
  * signer_sha256 is stored on each fork but not yet checked at install.
  */
+@OptIn(ExperimentalSerializationApi::class)
 class RecompaCatalogApi(private val context: Context) {
     private val client = OkHttpClient()
 
@@ -34,12 +38,35 @@ class RecompaCatalogApi(private val context: Context) {
 
     private fun cacheFile(): File = File(context.cacheDir, CACHE_FILE)
 
-    /** The last successfully fetched index, or null when never fetched. */
+    private val recompaJson = Json { ignoreUnknownKeys = true }
+
+    /**
+     * Decode one index document from a stream and enforce the schema
+     * version — the same rule as [parseRecompaIndex], but without
+     * materializing the whole document as a String first. Returns
+     * null on bad JSON or an unsupported schema_version.
+     */
+    private fun decodeRecompaIndex(stream: InputStream): RecompaIndex? {
+        return try {
+            val index = recompaJson.decodeFromStream<RecompaIndex>(stream)
+            if (index.schema_version != RECOMPA_SCHEMA_VERSION) null else index
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * The last successfully fetched index, or null when never fetched.
+     *
+     * Streaming (v1.8.7): decoded straight from the cache file
+     * stream — the old readText() allocated the whole 5.5 MB index
+     * as one String before parsing.
+     */
     fun loadCached(): RecompaIndex? {
         val file = cacheFile()
         if (!file.isFile) return null
         return try {
-            parseRecompaIndex(file.readText())
+            file.inputStream().buffered().use { decodeRecompaIndex(it) }
         } catch (e: Exception) {
             null
         }
@@ -50,16 +77,27 @@ class RecompaCatalogApi(private val context: Context) {
      * the parsed index, or null on any failure (network, HTTP error, bad
      * JSON, or an unsupported schema_version) — the old cache is left
      * untouched so the caller can keep serving it.
+     *
+     * Streaming (v1.8.7): the index is decoded straight from the
+     * response byte stream — the old response.body?.string()
+     * allocated the whole 5.5 MB index as one String before parsing.
+     * The raw cache file now holds the re-serialized index rather
+     * than the verbatim server bytes; it parses identically (the
+     * loader ignores unknown fields either way), and the file name
+     * and fallback order are unchanged.
      */
     suspend fun refresh(): RecompaIndex? = withContext(Dispatchers.IO) {
         try {
             val request = Request.Builder().url(INDEX_URL).build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@withContext null
-                val text = response.body?.string() ?: return@withContext null
-                val index = parseRecompaIndex(text) ?: return@withContext null
+                val stream = response.body?.byteStream() ?: return@withContext null
+                val index = stream.buffered().use { decodeRecompaIndex(it) }
+                    ?: return@withContext null
                 try {
-                    cacheFile().writeText(text)
+                    cacheFile().outputStream().buffered().use { out ->
+                        recompaJson.encodeToStream(index, out)
+                    }
                 } catch (e: Exception) {
                     // Cache write is best-effort; the parsed data is still good.
                 }
@@ -89,21 +127,32 @@ class RecompaCatalogApi(private val context: Context) {
         encodeDefaults = true
     }
 
-    /** The last merged catalog, or null when never saved / corrupt. */
+    /**
+     * The last merged catalog, or null when never saved / corrupt.
+     *
+     * Streaming (v1.8.7): decoded straight from the file stream.
+     * Same file layout as before, so a cache written by v1.8.5/v1.8.6
+     * still loads.
+     */
     fun loadParsedCached(): CachedCatalog? {
         val file = parsedCacheFile()
         if (!file.isFile) return null
         return try {
-            parsedJson.decodeFromString<CachedCatalog>(file.readText())
+            file.inputStream().buffered().use { parsedJson.decodeFromStream<CachedCatalog>(it) }
         } catch (e: Exception) {
             null
         }
     }
 
-    /** Persist the merged catalog. Best-effort — never throws. */
+    /**
+     * Persist the merged catalog. Best-effort — never throws.
+     *
+     * Streaming (v1.8.7): encoded straight to the file stream.
+     * Same file layout as before.
+     */
     fun saveParsed(cached: CachedCatalog) {
         try {
-            parsedCacheFile().writeText(parsedJson.encodeToString(cached))
+            parsedCacheFile().outputStream().buffered().use { parsedJson.encodeToStream(cached, it) }
         } catch (e: Exception) {
             // Cache write is best-effort; the in-memory data is still good.
         }

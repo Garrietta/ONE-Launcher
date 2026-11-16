@@ -22,6 +22,12 @@ import kotlinx.serialization.json.Json
 /** Schema version ONE understands. Anything else is refused outright. */
 const val RECOMPA_SCHEMA_VERSION = 1
 
+/**
+ * Hoisted regex (v1.8.7): [titleWords] compiled this on every call.
+ * A compiled Regex is immutable and thread-safe.
+ */
+private val TITLE_TAG_REGEX = Regex("\\([^)]*\\)|\\[[^]]*\\]")
+
 @Serializable
 data class RecompaIndex(
     val schema_version: Int = 0,
@@ -170,7 +176,7 @@ private val HINT_GENERIC_TOKENS = setOf(
  */
 fun hintsFromGameTitle(game: String, catalogId: String): List<String> {
     val words = normalizeForTokens(game)
-        .split(Regex("[^a-z0-9]+"))
+        .split(NON_ALNUM_REGEX)
         .filter { it.length >= 3 && it !in HINT_STOPWORDS && it !in HINT_GENERIC_TOKENS }
     return (words + normalizeForTokens(catalogId)).distinct()
 }
@@ -252,9 +258,9 @@ fun titleWords(title: String): List<String> {
             if (looksLikeExtension) title.substring(0, dot) else title
         }
     }
-    val noTags = noExt.replace(Regex("\\([^)]*\\)|\\[[^]]*\\]"), " ")
+    val noTags = noExt.replace(TITLE_TAG_REGEX, " ")
     return normalizeForTokens(noTags)
-        .split(Regex("[^a-z0-9]+"))
+        .split(NON_ALNUM_REGEX)
         .filter { it.length >= 3 && it !in HINT_STOPWORDS && it !in HINT_GENERIC_TOKENS }
 }
 

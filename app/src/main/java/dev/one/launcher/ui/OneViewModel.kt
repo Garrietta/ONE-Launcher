@@ -589,8 +589,11 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         // Restore a saved Premiumize session, if the user linked one before.
-        if (secureKeyStore.getApiKey() != null) {
-            viewModelScope.launch { restoreSession() }
+        // The keystore read runs on IO (v1.8.7): the first read also
+        // initializes the lazy EncryptedSharedPreferences, which touches
+        // the keystore and must not happen on the main thread.
+        viewModelScope.launch {
+            if (secureKeyStore.getApiKey() != null) restoreSession()
         }
         // Local game-files folder: show the cached pairs immediately so
         // badges render on a cold start, then re-scan in the background
@@ -684,13 +687,39 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
                 // (v1.8.3) ride alongside in the same pass — same
                 // server sources, separate channel, never feeding
                 // "Has files".
-                pairGamesWithFiles(
-                    games, cloudFiles, cloudFallback, serverSources,
-                    detected, localStates
-                ) to pairGamesWithMagnets(games, serverSources)
+                //
+                // Snapshot completeness (v1.8.7): whether the inputs
+                // THIS computation ran from were complete — every
+                // configured remote folder already had a listing in
+                // the serverListings snapshot. A pairing computed
+                // before the listings load (the first combine
+                // emission, when _remoteFolders is still empty or
+                // the listings have not landed) has no magnets at
+                // all, and must never overwrite a good cache with
+                // that empty result — that is the bug Garrett filmed
+                // in v1.8.6: the game page kept showing "No file"
+                // and the magnets re-appeared only after the live
+                // match, because the cache had been wiped to
+                // magnets-empty by a stale save. The live
+                // isPairingRefreshSettled() check below cannot catch
+                // this on its own: it reads the CURRENT state, which
+                // is settled by the time a slow transform finishes,
+                // while the result it guards was computed from the
+                // old, empty snapshot. So the gate is on the snapshot
+                // itself.
+                val snapshotComplete = games.isNotEmpty() &&
+                    remoteFolders.all { it.id in serverListings }
+                Triple(
+                    pairGamesWithFiles(
+                        games, cloudFiles, cloudFallback, serverSources,
+                        detected, localStates
+                    ),
+                    pairGamesWithMagnets(games, serverSources),
+                    snapshotComplete
+                )
             }
                 .flowOn(Dispatchers.Default)
-                .collect { (pairingMap, magnetMap) ->
+                .collect { (pairingMap, magnetMap, snapshotComplete) ->
                     // The cache pre-populates _gamesWithFiles on
                     // startup; the live result only replaces it once
                     // the refresh is settled (every source loaded), so
@@ -698,6 +727,12 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
                     // pairings — and the cache is never overwritten
                     // before it has even been loaded.
                     if (!pairingCacheLoaded) return@collect
+                    // A pairing computed from an incomplete snapshot
+                    // (listings not yet loaded) is partial — never
+                    // let it overwrite the cache. The next combine
+                    // emission, with complete inputs, saves the real
+                    // result.
+                    if (!snapshotComplete) return@collect
                     if (!isPairingRefreshSettled()) return@collect
                     schedulePairingCacheSave(pairingMap, magnetMap)
                 }
@@ -1227,7 +1262,7 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
 
     val isCloudConnected: Boolean get() = _pmAccount.value != null
 
-    private fun api(): PremiumizeApi? {
+    private suspend fun api(): PremiumizeApi? {
         val key = secureKeyStore.getApiKey() ?: return null
         return PremiumizeApi(key)
     }
@@ -1280,7 +1315,7 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun disconnectPremiumize() {
-        secureKeyStore.clear()
+        viewModelScope.launch { secureKeyStore.clear() }
         _pmAccount.value = null
         _pmError.value = null
         _cloudItems.value = emptyList()
@@ -1297,11 +1332,11 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun browseFolder(id: String?) {
-        val api = api() ?: return
-        _cloudLoading.value = true
-        _cloudError.value = null
-        _searchResults.value = null
         viewModelScope.launch {
+            val api = api() ?: return@launch
+            _cloudLoading.value = true
+            _cloudError.value = null
+            _searchResults.value = null
             when (val result = api.listFolder(id)) {
                 is PremiumizeResult.Success -> {
                     _cloudItems.value = result.value.content
@@ -1334,10 +1369,10 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         lastSearchQuery = trimmed
-        val api = api() ?: return
-        _cloudLoading.value = true
-        _cloudError.value = null
         viewModelScope.launch {
+            val api = api() ?: return@launch
+            _cloudLoading.value = true
+            _cloudError.value = null
             when (val result = api.searchOwnCloud(trimmed)) {
                 is PremiumizeResult.Success -> _searchResults.value = result.value.content
                 is PremiumizeResult.Failure -> _cloudError.value = result.message
@@ -1366,10 +1401,14 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
      * every port. Folders are dropped — only files can match a port.
      */
     fun refreshCloudFiles() {
-        val api = api() ?: return
         if (_cloudAllLoading.value) return
         _cloudAllLoading.value = true
         viewModelScope.launch {
+            val api = api()
+            if (api == null) {
+                _cloudAllLoading.value = false
+                return@launch
+            }
             when (val result = api.listAll()) {
                 is PremiumizeResult.Success -> {
                     _cloudAllFiles.value =
@@ -1398,8 +1437,10 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         if (_cloudAllFiles.value.isEmpty() && _cloudFallback.value[port.id] == null) {
-            val api = api() ?: return
-            viewModelScope.launch { searchCloudFallback(port, api) }
+            viewModelScope.launch {
+                val api = api() ?: return@launch
+                searchCloudFallback(port, api)
+            }
         }
     }
 
@@ -1767,9 +1808,9 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun downloadItem(item: PremiumizeItem) {
-        val api = api() ?: return
         _downloadError.value = null
         viewModelScope.launch {
+            val api = api() ?: return@launch
             val link = when (val details = api.itemDetails(item.id)) {
                 is PremiumizeResult.Success -> details.value.link
                 is PremiumizeResult.Failure -> {
@@ -2005,29 +2046,29 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
         _remoteDownloadError.value = null
         val app = getApplication<Application>()
         val dm = app.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-        val request = DownloadManager.Request(Uri.parse(entry.url)).apply {
-            setTitle(fileName)
-            setDescription("Portside remote folder")
-            setNotificationVisibility(
-                DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
-            )
-            setDestinationInExternalFilesDir(
-                app, Environment.DIRECTORY_DOWNLOADS, "ONE/$fileName"
-            )
-            val creds = remoteCredentials.load(source.id)
-            if (creds != null) {
-                addRequestHeader("Authorization", Credentials.basic(creds.first, creds.second))
-            }
-        }
-        val downloadId = try {
-            dm.enqueue(request)
-        } catch (e: Exception) {
-            _remoteDownloadError.value =
-                "Could not start the download: ${e.message ?: "unknown error"}"
-            return
-        }
-        _remoteDownloadProgress.value = _remoteDownloadProgress.value + (entry.url to 0f)
         viewModelScope.launch(Dispatchers.IO) {
+            val creds = remoteCredentials.load(source.id)
+            val request = DownloadManager.Request(Uri.parse(entry.url)).apply {
+                setTitle(fileName)
+                setDescription("Portside remote folder")
+                setNotificationVisibility(
+                    DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
+                )
+                setDestinationInExternalFilesDir(
+                    app, Environment.DIRECTORY_DOWNLOADS, "ONE/$fileName"
+                )
+                if (creds != null) {
+                    addRequestHeader("Authorization", Credentials.basic(creds.first, creds.second))
+                }
+            }
+            val downloadId = try {
+                dm.enqueue(request)
+            } catch (e: Exception) {
+                _remoteDownloadError.value =
+                    "Could not start the download: ${e.message ?: "unknown error"}"
+                return@launch
+            }
+            _remoteDownloadProgress.value = _remoteDownloadProgress.value + (entry.url to 0f)
             var done = false
             while (!done) {
                 delay(500)

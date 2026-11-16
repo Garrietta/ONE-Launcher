@@ -9,6 +9,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.documentfile.provider.DocumentFile
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -34,9 +35,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -107,7 +108,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -123,6 +127,8 @@ import androidx.navigation.compose.rememberNavController
 import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import com.garrietta.one.BuildConfig
 import dev.one.launcher.data.DetectedFile
 import dev.one.launcher.data.FindReplace
 import dev.one.launcher.data.GameEntry
@@ -300,18 +306,19 @@ fun OneApp(viewModel: OneViewModel) {
                             )
                         }
                     ) { innerPadding ->
-                        GameDetailContent(
-                            viewModel = viewModel,
-                            port = port,
-                            onGoToCloud = {
-                                navController.navigate(OneDestination.Cloud.route) {
-                                    launchSingleTop = true
-                                }
-                            },
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(innerPadding)
-                        )
+                        Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+                            AmbientCachedBackground(coverUrl = port.coverArtUrl)
+                            GameDetailContent(
+                                viewModel = viewModel,
+                                port = port,
+                                onGoToCloud = {
+                                    navController.navigate(OneDestination.Cloud.route) {
+                                        launchSingleTop = true
+                                    }
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
                     }
                 }
                 composable("game/{gameKey}") { entry ->
@@ -332,19 +339,20 @@ fun OneApp(viewModel: OneViewModel) {
                             )
                         }
                     ) { innerPadding ->
-                        GamePageContent(
-                            viewModel = viewModel,
-                            game = game,
-                            onOpenDetail = { id -> navController.navigate("detail/$id") },
-                            onGoToCloud = {
-                                navController.navigate(OneDestination.Cloud.route) {
-                                    launchSingleTop = true
-                                }
-                            },
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(innerPadding)
-                        )
+                        Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+                            AmbientCachedBackground(coverUrl = game.coverArtUrl)
+                            GamePageContent(
+                                viewModel = viewModel,
+                                game = game,
+                                onOpenDetail = { id -> navController.navigate("detail/$id") },
+                                onGoToCloud = {
+                                    navController.navigate(OneDestination.Cloud.route) {
+                                        launchSingleTop = true
+                                    }
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
                     }
                 }
                 composable(OneDestination.Cloud.route) {
@@ -407,6 +415,57 @@ fun OneApp(viewModel: OneViewModel) {
     }
 }
 
+// ---- Ambient background ----
+
+/**
+ * A blurred, darkened wash of the selected game's cached cover art
+ * drawn behind the screen (v1.8.7). The 128x128 downsample is cheap,
+ * the heavy blur runs on the GPU RenderNode (Android 12+), and the
+ * dark gradient scrim keeps the content readable. The theme colors
+ * and the content layout are unchanged — this is only a backdrop.
+ * When there is no cover art, nothing is drawn.
+ */
+@Composable
+private fun AmbientCachedBackground(
+    coverUrl: String,
+    modifier: Modifier = Modifier
+) {
+    if (coverUrl.isBlank()) return
+    val context = LocalContext.current
+    Box(modifier = modifier.fillMaxSize()) {
+        AsyncImage(
+            model = ImageRequest.Builder(context)
+                .data(coverUrl)
+                .size(128)
+                .memoryCacheKey("$coverUrl#ambient")
+                .placeholderMemoryCacheKey(coverUrl)
+                .crossfade(300)
+                .build(),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .fillMaxSize()
+                .blur(64.dp)
+                .alpha(0.22f)
+        )
+        // Dark scrim so the Library/detail content stays readable
+        // over the blurred art.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color.Black.copy(alpha = 0.55f),
+                            Color.Black.copy(alpha = 0.35f),
+                            Color.Black.copy(alpha = 0.65f)
+                        )
+                    )
+                )
+        )
+    }
+}
+
 // ---- Library ----
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -461,7 +520,11 @@ private fun LibraryScreen(
         is CatalogState.Unavailable -> state.message
     }
 
-    LaunchedEffect(Unit) { viewModel.refreshLibrary() }
+    // No refreshLibrary() here (v1.8.7): OneViewModel.init already
+    // runs it once, and re-running a full local-folder + Downloads
+    // re-scan on every navigation back to Library wasted work. The
+    // Library refreshes from init, the explicit refresh button, and
+    // download/assignment completion callbacks.
 
     // The selected game: the ViewModel's selection when one is set,
     // else the first game in the filtered list.
@@ -470,50 +533,56 @@ private fun LibraryScreen(
             ?: filteredGames.firstOrNull()
     }
 
-    if (unfolded) {
-        // Unfolded: no vertical console rail — the consoles are a
-        // horizontal row on top and the games are a vertical grid
-        // (3 wide with the detail pane open, 5 wide when it is
-        // closed). The detail pane keeps the game/port page, with an
-        // X to close it.
-        UnfoldedLibrary(
-            viewModel = viewModel,
-            games = filteredGames,
-            statuses = statuses,
-            pairingCache = pairingCache,
-            magnetPairings = magnetPairings,
-            selectedGame = selectedGame,
-            onSelectGame = onSelectGame,
-            onOpenDetail = onOpenDetail,
-            onGoToCloud = onGoToCloud,
-            onRefresh = { viewModel.refreshCatalog() },
-            query = query,
-            onQueryChange = { viewModel.setLibraryQuery(it) },
-            platformOptions = platformOptions,
-            selectedPlatform = platformFilter,
-            onPlatformChange = { viewModel.setLibraryPlatform(it) },
-            matchesOnly = matchesOnly,
-            onMatchesOnlyChange = { viewModel.setLibraryMatchesOnly(it) },
-            catalogStatusText = catalogStatusText
-        )
-    } else {
-        GameList(
-            games = filteredGames,
-            statuses = statuses,
-            pairingCache = pairingCache,
-            magnetPairings = magnetPairings,
-            onOpenGame = onOpenGame,
-            modifier = Modifier.fillMaxSize(),
-            onRefresh = { viewModel.refreshCatalog() },
-            query = query,
-            onQueryChange = { viewModel.setLibraryQuery(it) },
-            platformOptions = platformOptions,
-            selectedPlatform = platformFilter,
-            onPlatformChange = { viewModel.setLibraryPlatform(it) },
-            matchesOnly = matchesOnly,
-            onMatchesOnlyChange = { viewModel.setLibraryMatchesOnly(it) },
-            catalogStatusText = catalogStatusText
-        )
+    // Ambient background (v1.8.7): a blurred wash of the selected
+    // game's cover art behind the Library. The theme colors and the
+    // content layout are unchanged.
+    Box(modifier = Modifier.fillMaxSize()) {
+        AmbientCachedBackground(coverUrl = selectedGame?.coverArtUrl.orEmpty())
+        if (unfolded) {
+            // Unfolded: no vertical console rail — the consoles are a
+            // horizontal row on top and the games are a vertical grid
+            // (3 wide with the detail pane open, 5 wide when it is
+            // closed). The detail pane keeps the game/port page, with an
+            // X to close it.
+            UnfoldedLibrary(
+                viewModel = viewModel,
+                games = filteredGames,
+                statuses = statuses,
+                pairingCache = pairingCache,
+                magnetPairings = magnetPairings,
+                selectedGame = selectedGame,
+                onSelectGame = onSelectGame,
+                onOpenDetail = onOpenDetail,
+                onGoToCloud = onGoToCloud,
+                onRefresh = { viewModel.refreshCatalog() },
+                query = query,
+                onQueryChange = { viewModel.setLibraryQuery(it) },
+                platformOptions = platformOptions,
+                selectedPlatform = platformFilter,
+                onPlatformChange = { viewModel.setLibraryPlatform(it) },
+                matchesOnly = matchesOnly,
+                onMatchesOnlyChange = { viewModel.setLibraryMatchesOnly(it) },
+                catalogStatusText = catalogStatusText
+            )
+        } else {
+            GameList(
+                games = filteredGames,
+                statuses = statuses,
+                pairingCache = pairingCache,
+                magnetPairings = magnetPairings,
+                onOpenGame = onOpenGame,
+                modifier = Modifier.fillMaxSize(),
+                onRefresh = { viewModel.refreshCatalog() },
+                query = query,
+                onQueryChange = { viewModel.setLibraryQuery(it) },
+                platformOptions = platformOptions,
+                selectedPlatform = platformFilter,
+                onPlatformChange = { viewModel.setLibraryPlatform(it) },
+                matchesOnly = matchesOnly,
+                onMatchesOnlyChange = { viewModel.setLibraryMatchesOnly(it) },
+                catalogStatusText = catalogStatusText
+            )
+        }
     }
 }
 
@@ -539,16 +608,38 @@ private fun GameList(
     // Scroll position is saved across navigation (v1.8.2): returning
     // from a game page restores where the list was, instead of jumping
     // back to the top.
-    val listState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    val gridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
+
+    // Games ready to play (any port installed) get a compact shelf at
+    // the top, so active games are always one tap away.
+    val readyGames = remember(games, statuses) {
+        games.filter { game ->
+            game.ports.any { statuses[it.id]?.isInstalled == true }
+        }
+    }
 
     Column(modifier = modifier) {
         // The PORTSIDE header stays fixed at the top; everything
         // below it scrolls.
         LibraryHeader(onRefresh = onRefresh)
-        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-            // The top bar — search, "Has files", the console chips,
-            // and the catalog status — scrolls away on a scroll.
-            item {
+        // 2-column grid (v1.8.7): the folded Library was a single
+        // horizontal LazyRow of all 529 games with the bottom 60% of
+        // the cover screen empty (plus a spacer just to make the top
+        // bar collapsible). Now the games fill a vertical 2-column
+        // grid, matching the unfolded grid architecture, and the top
+        // bar (search, "Has files", console chips, catalog status)
+        // scrolls away with it. Tapping a card opens the game page
+        // immediately; the poster tags (v1.8.6) ride on the cards.
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(2),
+            state = gridState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // The top bar scrolls away on a scroll.
+            item(span = { GridItemSpan(maxLineSpan) }) {
                 LibrarySearchRow(
                     query = query,
                     onQueryChange = onQueryChange,
@@ -557,7 +648,7 @@ private fun GameList(
                 )
             }
             if (platformOptions.isNotEmpty()) {
-                item {
+                item(span = { GridItemSpan(maxLineSpan) }) {
                     ConsoleChipRow(
                         platformOptions = platformOptions,
                         selectedPlatform = selectedPlatform,
@@ -565,7 +656,7 @@ private fun GameList(
                     )
                 }
             }
-            item {
+            item(span = { GridItemSpan(maxLineSpan) }) {
                 Text(
                     text = catalogStatusText,
                     style = MaterialTheme.typography.bodySmall,
@@ -573,52 +664,67 @@ private fun GameList(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                 )
             }
-            // The shelf: larger posters in a horizontal row, one per
-            // game. It pins (sticky) directly under the PORTSIDE header
-            // once the top bar has scrolled away. There is no
-            // selected-game preview below it (v1.8.2) — tapping a
-            // poster opens the game page immediately.
-            stickyHeader {
-                LazyRow(
-                    modifier = Modifier.fillMaxWidth().height(288.dp)
-                        .background(MaterialTheme.colorScheme.background),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    items(games, key = { it.key }) { game ->
-                        val anyInstalled = game.ports.any { statuses[it.id]?.isInstalled == true }
-                        // The poster tag (v1.8.6): a matched magnet
-                        // counts like a matched file — a magnet-only
-                        // game ('Splosion Man's Triple Pack magnet)
-                        // shows "Magnet matched" with the tag
-                        // "json · Magnet". "Has files" is untouched
-                        // (magnets still don't count there); this is
-                        // the poster's local display only.
-                        val matchedFiles = pairingCache[game.key].orEmpty()
-                        val matchedMagnets = magnetPairings[game.key].orEmpty()
-                        val anyFile = game.ports.any { statuses[it.id]?.hasFile == true } ||
-                            matchedFiles.isNotEmpty()
-                        val anyMagnet = matchedMagnets.isNotEmpty()
-                        val statusText = posterStatusText(anyInstalled, anyFile, anyMagnet)
-                        val sourceLabel = posterSourceLabel(matchedFiles, matchedMagnets)
-                        GameSpine(
-                            game = game,
-                            isInstalled = anyInstalled,
-                            statusText = statusText,
-                            sourceLabel = sourceLabel,
-                            onClick = { onOpenGame(game.key) }
+            // Compact ready shelf: installed games only, one tap away.
+            if (readyGames.isNotEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    Column {
+                        Text(
+                            text = "Ready to play",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(bottom = 8.dp)
                         )
+                        LazyRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            items(readyGames, key = { it.key }) { game ->
+                                val anyInstalled = true
+                                val matchedFiles = pairingCache[game.key].orEmpty()
+                                val matchedMagnets = magnetPairings[game.key].orEmpty()
+                                val anyFile = game.ports.any { statuses[it.id]?.hasFile == true } ||
+                                    matchedFiles.isNotEmpty()
+                                val anyMagnet = matchedMagnets.isNotEmpty()
+                                val statusText = posterStatusText(anyInstalled, anyFile, anyMagnet)
+                                val sourceLabel = posterSourceLabel(matchedFiles, matchedMagnets)
+                                GameGridCard(
+                                    game = game,
+                                    selected = false,
+                                    isInstalled = anyInstalled,
+                                    statusText = statusText,
+                                    sourceLabel = sourceLabel,
+                                    onClick = { onOpenGame(game.key) },
+                                    modifier = Modifier.width(120.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }
-            // Space below the shelf so the list can scroll (v1.7.0):
-            // the top bar collapses and the shelf pins under the
-            // header. The shelf is the Library's content now — there
-            // is no hero below it — so without this the list would be
-            // too short to scroll at all. It adds no visible content:
-            // the empty space below the shelf is already there.
-            item {
-                Spacer(modifier = Modifier.fillParentMaxHeight(0.75f))
+            items(games, key = { it.key }) { game ->
+                val anyInstalled = game.ports.any { statuses[it.id]?.isInstalled == true }
+                // The poster tag (v1.8.6): a matched magnet
+                // counts like a matched file — a magnet-only
+                // game ('Splosion Man's Triple Pack magnet)
+                // shows "Magnet matched" with the tag
+                // "json · Magnet". "Has files" is untouched
+                // (magnets still don't count there); this is
+                // the poster's local display only.
+                val matchedFiles = pairingCache[game.key].orEmpty()
+                val matchedMagnets = magnetPairings[game.key].orEmpty()
+                val anyFile = game.ports.any { statuses[it.id]?.hasFile == true } ||
+                    matchedFiles.isNotEmpty()
+                val anyMagnet = matchedMagnets.isNotEmpty()
+                val statusText = posterStatusText(anyInstalled, anyFile, anyMagnet)
+                val sourceLabel = posterSourceLabel(matchedFiles, matchedMagnets)
+                GameGridCard(
+                    game = game,
+                    selected = false,
+                    isInstalled = anyInstalled,
+                    statusText = statusText,
+                    sourceLabel = sourceLabel,
+                    onClick = { onOpenGame(game.key) }
+                )
             }
         }
     }
@@ -756,6 +862,10 @@ private fun UnfoldedLibrary(
     // the folded list's.
     val gridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
     val selectedPort = selectedPortId?.let { viewModel.portById(it) }
+    // Back (v1.8.7): when a port's Details are open in the right
+    // pane, swiping Back returns the pane to the Game Page instead of
+    // exiting the app.
+    BackHandler(enabled = selectedPort != null) { viewModel.selectPort(null) }
     // The pane is only visible when it has something to show; with
     // no game or port selected (an empty Library) the grid takes the
     // full width.
@@ -864,14 +974,13 @@ private fun UnfoldedLibrary(
 }
 
 /**
- * One card in the unfolded game grid: the game's cover art, portrait,
- * filling the grid column, with its title and platform underneath.
- * Mirrors [GameSpine] (the folded shelf), but fluid-width instead of
- * a fixed 112dp. The selected card carries a lime outline; a game
- * with any port installed carries a small lime play mark on the cover.
- * The status ("Not installed", "File matched", ...) and the file
- * source tag (Premiumize / the remote folder's name / Local) ride on
- * the art, like the shelf (v1.8.6 — they were missing here).
+ * One card in the game grid (unfolded, and folded since v1.8.7):
+ * the game's cover art, portrait, filling the grid column, with its
+ * title and platform underneath. The selected card carries a lime
+ * outline; a game with any port installed carries a small lime play
+ * mark on the cover. The status ("Not installed", "File matched",
+ * ...) and the file source tag (Premiumize / the remote folder's
+ * name / Local) ride on the art (v1.8.6 — they were missing here).
  */
 @Composable
 private fun GameGridCard(
@@ -992,126 +1101,6 @@ private fun GameGridCard(
     }
 }
 
-/**
- * One poster on the shelf (v1.8.2): the game's cover art, portrait
- * and larger than the old spine, with its title and platform
- * underneath. Tapping it opens the game page immediately — there is
- * no selected-game preview anymore. The status ("Not installed",
- * "File matched", ...) and the file source tag (Premiumize / the
- * remote folder's name / Local) ride on the art, so the shelf shows
- * at a glance which games have a file and where it lives. A game
- * with any port installed carries a small lime play mark on the cover.
- */
-@Composable
-private fun GameSpine(
-    game: GameEntry,
-    isInstalled: Boolean,
-    statusText: String,
-    sourceLabel: String?,
-    onClick: () -> Unit
-) {
-    Column(modifier = Modifier.width(160.dp)) {
-        Card(
-            onClick = onClick,
-            modifier = Modifier.size(width = 160.dp, height = 224.dp),
-            shape = RoundedCornerShape(8.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant
-            )
-        ) {
-            Box(modifier = Modifier.fillMaxSize()) {
-                if (game.coverArtUrl.isNotBlank()) {
-                    AsyncImage(
-                        model = game.coverArtUrl,
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = game.title.take(1),
-                            style = MaterialTheme.typography.headlineMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-                if (isInstalled) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(6.dp)
-                            .size(24.dp)
-                            .background(
-                                Color.Black.copy(alpha = 0.6f),
-                                CircleShape
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            Icons.Filled.PlayArrow,
-                            contentDescription = "Installed",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                }
-                // Status + source, stacked at the bottom of the art.
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Surface(
-                        color = Color.Black.copy(alpha = 0.6f),
-                        shape = MaterialTheme.shapes.small
-                    ) {
-                        Text(
-                            text = statusText,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                        )
-                    }
-                    if (sourceLabel != null) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.primaryContainer
-                                .copy(alpha = 0.9f),
-                            shape = MaterialTheme.shapes.small
-                        ) {
-                            Text(
-                                text = sourceLabel,
-                                style = MaterialTheme.typography.labelSmall,
-                                modifier = Modifier.padding(
-                                    horizontal = 6.dp,
-                                    vertical = 3.dp
-                                )
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        Spacer(modifier = Modifier.height(6.dp))
-        Text(
-            text = game.title,
-            style = MaterialTheme.typography.bodySmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Text(
-            text = game.platform,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-    }
-}
 
 @Composable
 private fun StatusChip(text: String) {
@@ -1223,20 +1212,40 @@ private fun GameDetailContent(
 
     // Cloud files matching this port: the flat listAll cache first, the
     // per-port search fallback when listAll failed for this port.
-    val cloudMatches = cloudAllFiles.mapNotNull { item ->
-        PortMatcher.matchKind(item.name, port, item.link)?.let { item to it }
-    }.ifEmpty {
-        (cloudFallback[port.id].orEmpty()).mapNotNull { item ->
-            PortMatcher.matchKind(item.name, port, item.link)?.let { item to it }
+    // Computed off Main (v1.8.7): this is the same 26k-entry scan the
+    // game page moved to produceState in v1.8.6, and it was still
+    // running synchronously in the composable body here — every
+    // recomposition (including every download-progress tick)
+    // re-scanned the whole feed on the UI thread.
+    val cloudMatches by produceState(
+        initialValue = emptyList<Pair<PremiumizeItem, MatchKind>>(),
+        cloudAllFiles, cloudFallback, port
+    ) {
+        value = withContext(Dispatchers.Default) {
+            cloudAllFiles.mapNotNull { item ->
+                PortMatcher.matchKind(item.name, port, item.link)?.let { item to it }
+            }.ifEmpty {
+                (cloudFallback[port.id].orEmpty()).mapNotNull { item ->
+                    PortMatcher.matchKind(item.name, port, item.link)?.let { item to it }
+                }
+            }
         }
     }
 
     // Server files matching this port: each configured remote folder's
     // cached listing, matched with the same matcher as the Cloud tab.
     // The detail page is the only place remote entries are matched.
-    val serverMatches = remoteFolders.flatMap { source ->
-        PortMatcher.matchRemoteEntries(serverListings[source.id].orEmpty(), port)
-            .map { (entry, kind) -> Triple(source, entry, kind) }
+    // Off Main for the same reason as the cloud match above.
+    val serverMatches by produceState(
+        initialValue = emptyList<Triple<RemoteFolderSource, RemoteEntry, MatchKind>>(),
+        remoteFolders, serverListings, port
+    ) {
+        value = withContext(Dispatchers.Default) {
+            remoteFolders.flatMap { source ->
+                PortMatcher.matchRemoteEntries(serverListings[source.id].orEmpty(), port)
+                    .map { (entry, kind) -> Triple(source, entry, kind) }
+            }
+        }
     }
 
     // Fetch the latest release when this detail page opens; the ViewModel
@@ -1273,7 +1282,13 @@ private fun GameDetailContent(
     ) {
         if (port.coverArtUrl.isNotBlank()) {
             AsyncImage(
-                model = port.coverArtUrl,
+                // placeholderMemoryCacheKey (v1.8.7): the poster's
+                // cached bitmap for this URL displays instantly at
+                // 0 ms while the higher-res header crop settles.
+                model = ImageRequest.Builder(context)
+                    .data(port.coverArtUrl)
+                    .placeholderMemoryCacheKey(port.coverArtUrl)
+                    .build(),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
@@ -1994,7 +2009,13 @@ private fun GamePageContent(
     ) {
         if (game.coverArtUrl.isNotBlank()) {
             AsyncImage(
-                model = game.coverArtUrl,
+                // placeholderMemoryCacheKey (v1.8.7): the poster's
+                // cached bitmap for this URL displays instantly at
+                // 0 ms while the higher-res header crop settles.
+                model = ImageRequest.Builder(context)
+                    .data(game.coverArtUrl)
+                    .placeholderMemoryCacheKey(game.coverArtUrl)
+                    .build(),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
@@ -2544,7 +2565,13 @@ private fun CloudItemRow(
                 }
             }
             if (item.type != "folder") {
-                val matches = PortMatcher.matchKinds(item.name, ports, item.link)
+                // Remembered (v1.8.7): matching this row against all
+                // 536 ports ran on every scroll frame. The inputs
+                // (name, ports, link) are stable per row, so the
+                // result is cached across recompositions.
+                val matches = remember(item.name, ports, item.link) {
+                    PortMatcher.matchKinds(item.name, ports, item.link)
+                }
                 if (matches.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(4.dp))
                     // FlowRow, not a plain Row: a Row gives each chip past
@@ -2972,7 +2999,7 @@ private fun SettingsScreen(
 
         Spacer(modifier = Modifier.height(24.dp))
         Text(text = "About", style = MaterialTheme.typography.titleMedium)
-        Text(text = "Portside 1.6.0 (release build)", style = MaterialTheme.typography.bodyMedium)
+        Text(text = "Portside ${BuildConfig.VERSION_NAME} (release build)", style = MaterialTheme.typography.bodyMedium)
         Spacer(modifier = Modifier.height(8.dp))
         TextButton(onClick = { openUrl(context, "https://recompa.app") }) {
             Text(
@@ -3220,7 +3247,11 @@ private fun RemoteBrowserScreen(viewModel: OneViewModel, modifier: Modifier = Mo
                 }
                 // Hide filtering is display only: the parser still read
                 // every entry, and the download still uses the real name.
-                val visibleEntries = s.entries.filter { shouldShowRemoteEntry(it, format) }
+                // Remembered (v1.8.7): filtering all 26,710 entries
+                // ran on every recomposition.
+                val visibleEntries = remember(s.entries, format) {
+                    s.entries.filter { shouldShowRemoteEntry(it, format) }
+                }
                 if (s.entries.isEmpty()) {
                     Text(
                         text = "This folder is empty.",
@@ -3295,8 +3326,11 @@ private fun RemoteBrowserRow(
 ) {
     // The displayed title is formatted; the download, the folder
     // navigation, and everything else still use entry.name verbatim.
+    // Remembered (v1.8.7): the formatting ran on every recomposition.
     val context = LocalContext.current
-    val formatted = formatRemoteTitle(entry.name, entry.isFolder, format)
+    val formatted = remember(entry.name, entry.isFolder, format) {
+        formatRemoteTitle(entry.name, entry.isFolder, format)
+    }
     Card(
         modifier = Modifier
             .fillMaxWidth()

@@ -13,8 +13,8 @@ android {
         applicationId = "com.garrietta.one"
         minSdk = 26
         targetSdk = 34
-        versionCode = 20
-        versionName = "1.8.6"
+        versionCode = 21
+        versionName = "1.8.7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -37,7 +37,14 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("release")
-            isMinifyEnabled = false
+            // R8 (v1.8.7): shrink code + resources. The ProGuard rules
+            // keep kotlinx-serialization's generated serializers and
+            // the @Serializable data classes, plus the Compose entry
+            // points, so the release build keeps working. If R8 ever
+            // breaks the release build, revert these two lines in the
+            // same round — do not ship a broken release to get R8 in.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -56,6 +63,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {

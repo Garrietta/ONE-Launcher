@@ -5,9 +5,12 @@ import dev.one.launcher.data.RecompaPlatform
 import dev.one.launcher.data.RemoteEntry
 import dev.one.launcher.data.RemoteListingsCache
 import dev.one.launcher.model.Port
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromStream
+import kotlinx.serialization.json.encodeToStream
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -27,6 +30,7 @@ import java.nio.file.Files
  * (serve disk, refresh in background, keep cached entries on fetch
  * error) is runtime behavior, not JVM-testable here.
  */
+@OptIn(ExperimentalSerializationApi::class)
 class DiskCacheTest {
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -141,5 +145,115 @@ class DiskCacheTest {
         assertEquals(ports, minimal.ports)
         assertTrue(minimal.platforms.isEmpty())
         assertEquals("", minimal.generatedAt)
+    }
+
+    // ---- Streaming I/O (v1.8.7) ----
+    //
+    // Both caches now read/write through streams (decodeFromStream /
+    // encodeToStream) instead of materializing the whole document as
+    // a String. These tests prove the streamed paths round-trip a
+    // full-size listing and the catalog, and that the file layout is
+    // unchanged — a cache written by the old String path still loads,
+    // and vice versa.
+
+    /** 26,710 entries, the size of the live remote.json. */
+    private fun largeListing(): List<RemoteEntry> =
+        (0 until 26_710).map { i ->
+            if (i % 3 == 0) {
+                RemoteEntry(
+                    name = "Game $i (USA).zip",
+                    url = "magnet:?xt=urn:btih:${"a".repeat(40)}&dn=Game+$i&so=${1000 + i}",
+                    isFolder = false,
+                    sizeBytes = 1_000_000L + i,
+                    kind = "magnet",
+                    category = "Nintendo - Wii - NKit RVZ [zstd-19-128k]"
+                )
+            } else {
+                RemoteEntry(
+                    name = "Game $i (USA).zip",
+                    url = "https://example.com/files/game-$i.zip",
+                    isFolder = false,
+                    sizeBytes = 2_000_000L + i
+                )
+            }
+        }
+
+    @Test
+    fun remoteListingsCacheRoundTripsLargeListingViaStream() {
+        val dir = tempDir()
+        val cache = RemoteListingsCache(dir)
+        val entries = largeListing()
+        cache.save("json", entries)
+        // The cache file is a multi-MB document, like the live feed.
+        val file = File(dir, "remote-listings-json.json")
+        assertTrue(file.length() > 1_000_000)
+        val loaded = cache.load("json")
+        assertEquals(entries, loaded)
+        assertEquals(26_710, loaded!!.size)
+        // A magnet entry's category and size survive the round-trip.
+        assertEquals("Nintendo - Wii - NKit RVZ [zstd-19-128k]", loaded[0].category)
+        assertEquals("magnet", loaded[0].kind)
+        assertEquals(1_000_000L, loaded[0].sizeBytes)
+        assertEquals(2_000_001L, loaded[1].sizeBytes)
+    }
+
+    @Test
+    fun remoteListingsCacheLoadsOldStringFormatAndViceVersa() {
+        val dir = tempDir()
+        val cache = RemoteListingsCache(dir)
+        // A cache written the old way (encodeToString + writeText,
+        // v1.8.5/v1.8.6) still loads through the streamed load().
+        val file = File(dir, "remote-listings-json.json")
+        file.writeText(json.encodeToString(sampleEntries))
+        assertEquals(sampleEntries, cache.load("json"))
+        // And a cache written the new way (streamed save) still
+        // decodes through the old String path — same file layout.
+        cache.save("json", sampleEntries)
+        assertEquals(
+            sampleEntries,
+            json.decodeFromString<List<RemoteEntry>>(file.readText())
+        )
+    }
+
+    @Test
+    fun cachedCatalogRoundTripsViaStream() {
+        // The same codecs RecompaCatalogApi.saveParsed /
+        // loadParsedCached use (same Json config: ignoreUnknownKeys
+        // + encodeDefaults), exercised through file streams on a
+        // 200-port catalog.
+        val ports = (0 until 200).map { i ->
+            Port(
+                id = "port-$i",
+                title = "Port $i",
+                game = "Game $i",
+                system = "Nintendo 64",
+                type = "recomp",
+                repo = "example/port-$i",
+                releasesUrl = "https://github.com/example/port-$i/releases",
+                requiredDump = "Your own files.",
+                fileNameHints = listOf("game", "port-$i"),
+                distinctiveNameHints = listOf("port-$i"),
+                platformId = "n64",
+                platformName = "Nintendo 64"
+            )
+        }
+        val cached = CachedCatalog(
+            ports = ports,
+            platforms = listOf(RecompaPlatform("n64", "Nintendo 64")),
+            generatedAt = "2026-11-16T00:18:07Z"
+        )
+        val dir = tempDir()
+        val file = File(dir, "recompa-parsed.json")
+        file.outputStream().buffered().use { json.encodeToStream(cached, it) }
+        val loaded = file.inputStream().buffered()
+            .use { json.decodeFromStream<CachedCatalog>(it) }
+        assertEquals(cached, loaded)
+        assertEquals(200, loaded.ports.size)
+        // The streamed bytes are the same document the old String
+        // path wrote — a v1.8.5/v1.8.6 parsed cache still loads.
+        assertEquals(
+            cached,
+            json.decodeFromString<CachedCatalog>(file.readText())
+        )
     }
 }

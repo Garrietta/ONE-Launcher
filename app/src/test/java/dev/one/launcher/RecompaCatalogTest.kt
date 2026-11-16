@@ -5,6 +5,8 @@ import dev.one.launcher.data.MatchKind
 import dev.one.launcher.data.PortMatcher
 import dev.one.launcher.data.RecompaAsset
 import dev.one.launcher.data.RecompaFork
+import dev.one.launcher.data.RecompaIndex
+import dev.one.launcher.data.RecompaPlatform
 import dev.one.launcher.data.RecompaPort
 import dev.one.launcher.data.hintsFromGameTitle
 import dev.one.launcher.data.mapCatalogPort
@@ -14,13 +16,21 @@ import dev.one.launcher.data.titleSimilarity
 import dev.one.launcher.data.titleWords
 import dev.one.launcher.data.withDistinctiveHints
 import dev.one.launcher.model.Port
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromStream
+import kotlinx.serialization.json.encodeToStream
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
+import java.nio.file.Files
 
+@OptIn(ExperimentalSerializationApi::class)
 class RecompaCatalogTest {
 
     // Small canned index: a multi-fork port (soh), a second port
@@ -557,5 +567,74 @@ class RecompaCatalogTest {
         assertEquals("starship", CURATED_CATALOG_IDS["starship"])
         assertNull(CURATED_CATALOG_IDS["zelda64recomp"])
         assertNull(CURATED_CATALOG_IDS["zelda3"])
+    }
+
+    // ---- Streaming I/O (v1.8.7) ----
+    //
+    // RecompaCatalogApi now decodes the index straight from the
+    // cache file / response byte stream (decodeFromStream) and writes
+    // the raw cache with encodeToStream. The Api itself needs a
+    // Context, so these tests exercise the exact same codecs and
+    // Json config (ignoreUnknownKeys) through file streams, and
+    // prove the streamed decode matches parseRecompaIndex exactly.
+
+    private val streamJson = Json { ignoreUnknownKeys = true }
+
+    private fun streamDecode(text: String): RecompaIndex? {
+        return try {
+            val index = streamJson.decodeFromStream<RecompaIndex>(
+                text.toByteArray(Charsets.UTF_8).inputStream()
+            )
+            if (index.schema_version != 1) null else index
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    @Test
+    fun indexDecodesFromStreamIdentically() {
+        val fromString = parseRecompaIndex(cannedIndex)
+        val fromStream = streamDecode(cannedIndex)
+        assertNotNull(fromString)
+        assertEquals(fromString, fromStream)
+        assertEquals(4, fromStream!!.ports.size)
+        assertEquals(2, fromStream.platforms.size)
+        assertEquals("soh", fromStream.ports[0].id)
+        assertEquals("2026-11-16T00:18:07Z", fromStream.generated_at)
+    }
+
+    @Test
+    fun streamDecodeRejectsBadSchemaAndMalformedJson() {
+        val other = cannedIndex.replace("\"schema_version\": 1", "\"schema_version\": 2")
+        assertNull(streamDecode(other))
+        assertNull(streamDecode("{ not json"))
+        assertNull(streamDecode(""))
+        // The decoder itself throws on malformed input — the Api's
+        // try/catch is what turns that into null, never a crash.
+        assertThrows(
+            kotlinx.serialization.SerializationException::class.java
+        ) {
+            streamJson.decodeFromStream<RecompaIndex>(
+                "{ not json".toByteArray(Charsets.UTF_8).inputStream()
+            )
+        }
+    }
+
+    @Test
+    fun rawIndexCacheRoundTripsViaStream() {
+        // The same write/read pair refresh() + loadCached() use:
+        // encode the parsed index to a file stream, decode it back
+        // from the file stream, and get the identical index.
+        val index = parseRecompaIndex(cannedIndex)!!
+        val dir = Files.createTempDirectory("portside-index-test").toFile()
+        val file = File(dir, "recompa-index.json")
+        file.outputStream().buffered().use { streamJson.encodeToStream(index, it) }
+        val loaded = file.inputStream().buffered()
+            .use { streamJson.decodeFromStream<RecompaIndex>(it) }
+        assertEquals(index, loaded)
+        assertEquals(4, loaded.ports.size)
+        // The streamed bytes are the same document the old String
+        // path wrote — a v1.8.6 raw cache still parses.
+        assertEquals(index, parseRecompaIndex(file.readText()))
     }
 }

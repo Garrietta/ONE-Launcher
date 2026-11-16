@@ -1,5 +1,125 @@
 # Changelog
 
+## v1.8.7 — 2026-11-16
+
+Performance audit (all 12 items) + the caching fix Garrett filmed
+in his v1.8.6 video. The headline: game pages now show their links
+immediately from cache, every time — no "No file" flash, no reset
+to zero on reopen.
+
+**The cache is the source of truth now (Garrett's video).** v1.8.6
+made game pages non-blocking, but they still recomputed the match
+on every open and showed "No file for this game yet" until the live
+match landed — 'Splosion Man's magnet took ~10s to appear, 007
+Nightfire reset to zero on reopen. Root cause: a stale-save race.
+The pairing runs in a 7-flow combine whose transform took ~179s
+(pre-index); the FIRST transform ran while the server listings were
+still empty, but the "settled" gate checked the LIVE state, which
+was settled by the time the transform finished — so the save wrote
+the stale result (files populated, magnets EMPTY), overwriting a
+good cache. Fixed two ways: the save is now gated on snapshot
+completeness (the transform reports whether every configured remote
+folder had a listing in the snapshot it computed from — a partial
+result never overwrites the cache), and the pairing itself is ~35x
+faster (below), so the correct save lands within seconds of launch.
+The pairing runs once on first launch and re-runs whenever a source
+is added; the cache is never capped. Game pages, posters, and "Has
+files" all read from the same cache, instantly.
+
+**Token Index (audit item 3).** The pairing scanned all 536 ports
+for every one of the 26,710 remote entries (~14M matchKind calls,
+~179s). A word-to-port index now maps each word token to the ports
+that could match it, so each entry is only tested against
+candidates sharing at least one word (plus the prefix rule for
+5+ letter single-word hints). Every candidate is still verified by
+the UNCHANGED matchKind, so results are byte-for-byte identical to
+the old scan (verified by a full-catalog brute-force comparison:
+the old scan every-port-against-every-magnet vs the index, over
+live Recompa 536 ports x live remote.json 26,318 magnets —
+identical on the cleaned-name key, including all true positives).
+Measured: files 3.0s → 0.26s, magnets 176.6s → 4.8s, total
+179.6s → 5.1s (~35x). The full pairing is still not under the
+40 ms audit target — it runs on a background thread, and the
+user-facing reads (game pages, posters) come from cache instantly,
+so the 40 ms number does not gate anything the user sees. All
+Regex instances are hoisted to top-level constants (no Regex(...)
+inside the hot paths), and gamesWithFiles() is deleted — the "Has
+files" set is derived from the pairing map's keys in O(1).
+
+**Download progress throttle (item 1).** Progress was emitted on
+every 8 KB read (~850,000 StateFlow updates for a 6.5 GB file).
+Now a 64 KB buffer, at most one emission per 100 ms or per 1%
+step. A simulated 6.5 GB download at 50 MB/s emits ~1,000 times
+— three orders of magnitude below 850k (the 100 ms rule, not the
+1% rule, dominates at that speed).
+
+**Detail page + rows off Main (item 2).** GameDetailContent's
+cloud/server matches ran directly in the composable body (no
+remember) — every recomposition, including every download-progress
+tick, re-scanned the 26k-entry feed on the UI thread. They now run
+in produceState on Dispatchers.Default. CloudItemRow's matchKinds,
+RemoteBrowserScreen's 26k-entry filter, and RemoteBrowserRow's
+title formatting are wrapped in remember.
+
+**Keystore off Main (item 4).** SecureKeyStore and
+RemoteFolderCredentials created EncryptedSharedPreferences
+synchronously in the ViewModel constructor. The prefs are now lazy
+and every read/write runs on Dispatchers.IO.
+
+**Streaming JSON (item 5).** remote.json and the catalog caches no
+longer allocate a ~22 MB String + a full DOM tree. Parsing decodes
+directly from streams into lightweight DTOs, and cache reads/writes
+stream through buffered streams.
+
+**Pairing cache is a file now (item 6).** It was a single multi-MB
+JSON string inside Preferences DataStore. Now pairing-cache.json in
+filesDir, written atomically (temp file + rename) so a crash
+mid-write never leaves a torn cache. The v1.8.6 DataStore cache is
+migrated on first load — no cached pairings are lost. Format
+unchanged (version stays 1). Note: `Json.encodeToStream` /
+`decodeFromStream` do not exist in kotlinx-serialization-json
+1.7.3 (they arrived in 1.8.0), so the file is read/written through
+a buffered reader/writer with `encodeToString`/`decodeFromString`
+— same JSON, same pattern as the other cache files.
+
+**No duplicate refresh (item 7).** LibraryScreen's LaunchedEffect
+refreshLibrary() is removed — OneViewModel.init already runs it
+once. Tab switches back to Library no longer re-scan the local
+folder and Downloads.
+
+**Coil cache (item 8).** A PortsideApplication ImageLoaderFactory
+gives Coil a 25% memory cache, a 150 MB disk cache for cover art,
+RGB_565, and a 150 ms crossfade. Detail headers reuse the poster's
+memory cache key as a placeholder, so cover art appears at 0 ms
+instead of a blank grey box.
+
+**Ambient background (item 9).** The selected game's cached cover
+art is drawn behind the Library and detail screens — 128x128
+downsample, heavy GPU blur, dark gradient scrim, alpha 0.22. Theme
+colors and content layout are unchanged.
+
+**Folded Library is a 2-column grid (item 10).** The single
+horizontal shelf of 529 games (with the bottom 60% of the cover
+screen empty and a spacer just to make the top bar collapsible) is
+replaced by a 2-column LazyVerticalGrid matching the unfolded grid,
+with a compact "Ready to play" shelf of installed games at the top.
+The top bar still collapses on scroll; poster tags ride on the
+grid cards. The old GameSpine shelf card is deleted.
+
+**Unfolded Back gesture (item 11).** A BackHandler returns the
+right pane to the Game Page when a port's Details are open, instead
+of exiting the app.
+
+**R8 + version string (item 12).** Release builds now use R8
+(isMinifyEnabled + isShrinkResources) with ProGuard rules keeping
+the kotlinx-serialization serializers and data classes. Settings
+reads BuildConfig.VERSION_NAME instead of a hardcoded "1.6.0".
+
+Matcher rules unchanged: titleWords, ARCHIVE_PROVISIONAL,
+NAME_ONLY, 90% similarity, and platform-consistency are exactly as
+shipped. "Has files" still excludes magnets. The magnet copy action
+is unchanged.
+
 ## v1.8.6 — 2026-11-16
 
 Game pages load instantly, poster tags on the unfolded layout, and

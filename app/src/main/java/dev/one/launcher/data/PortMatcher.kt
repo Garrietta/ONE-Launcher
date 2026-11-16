@@ -7,6 +7,19 @@ import java.text.Normalizer
 import java.util.zip.ZipFile
 
 /**
+ * Hoisted regexes (v1.8.7): these were compiled on every call inside
+ * [normalizeForTokens], [PortMatcher.fileNameWords],
+ * [PortMatcher.hintMatchesFileName] and the per-port regex checks —
+ * millions of compilations per full-catalog pairing. A compiled
+ * Regex is immutable and thread-safe, so one top-level instance
+ * serves every call. Never call Regex(...) inside a matcher hot
+ * path; use these.
+ */
+private val DIACRITICS_REGEX = Regex("\\p{Mn}+")
+/** Shared word-splitter (also used by RecompaCatalog's titleWords). */
+internal val NON_ALNUM_REGEX = Regex("[^a-z0-9]+")
+
+/**
  * Fold diacritics for tokenization: "pokémon" and "pokemon" must be
  * the same token, on both sides of a match — the game title a hint
  * comes from and the file name it is checked against. NFD splits a
@@ -17,8 +30,12 @@ import java.util.zip.ZipFile
  */
 fun normalizeForTokens(text: String): String =
     Normalizer.normalize(text, Normalizer.Form.NFD)
-        .replace(Regex("\\p{Mn}+"), "")
+        .replace(DIACRITICS_REGEX, "")
         .lowercase()
+
+/** Lowercase word tokens of a file name, split on non-alphanumerics. */
+private fun fileNameWords(fileName: String): List<String> =
+    normalizeForTokens(fileName).split(NON_ALNUM_REGEX).filter { it.isNotEmpty() }
 
 /**
  * Minimum title similarity for a NAME_ONLY match (v1.8.0): the
@@ -120,10 +137,6 @@ object PortMatcher {
         return ARCHIVE_EXTENSIONS.any { lower.endsWith(it) }
     }
 
-    /** Lowercase word tokens of a file name, split on non-alphanumerics. */
-    private fun fileNameWords(fileName: String): List<String> =
-        normalizeForTokens(fileName).split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
-
     /**
      * A hint matches when its words appear in the file name: a single-word
      * hint must be a whole word, except hints of 5+ letters which may also
@@ -135,7 +148,7 @@ object PortMatcher {
      */
     private fun hintMatchesFileName(hint: String, words: List<String>): Boolean {
         val hintWords = normalizeForTokens(hint)
-            .split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
+            .split(NON_ALNUM_REGEX).filter { it.isNotEmpty() }
         if (hintWords.isEmpty()) return false
         if (hintWords.size == 1) {
             val word = hintWords[0]
@@ -471,3 +484,81 @@ object PortMatcher {
     }
 }
 
+
+/**
+ * Word-to-port lookup (v1.8.7): the token index that makes the
+ * full-catalog pairing fast. Every [PortMatcher.matchKind] path that
+ * can return non-null requires the file and the port to share at
+ * least one word token — a hint hit (DIRECT, ARCHIVE_PROVISIONAL,
+ * NAME_ONLY), or a title similarity >= 0.90 (NAME_ONLY,
+ * ARCHIVE_PROVISIONAL), which itself requires a shared title word —
+ * so a port that shares no word with an entry cannot match it, and
+ * is safely skipped. The only exceptions are a port with no hints
+ * and no regex (the "no file info" early return) and a port with a
+ * regex, neither of which occurs in the live catalog (every port has
+ * hints, none has a regex) — but they are kept as [alwaysCandidates]
+ * so the index stays correct if a future catalog ever adds one. The
+ * index is a prefilter only: every candidate it returns is still
+ * verified by the unchanged [PortMatcher.matchKind], so the results
+ * are identical to the old full scan.
+ *
+ * A single-word hint of 5+ letters also matches as a word prefix
+ * ("starfox" in "starfox64"), so a file word is looked up under
+ * itself and under every prefix of length >= 5 — a concatenated
+ * file name still finds its port. Multi-word hints are indexed by
+ * each of their words (a phrase hit implies every word is present);
+ * the phrase order is verified by [PortMatcher.matchKind], not by
+ * the index.
+ *
+ * Built once per catalog load / pairing run and reused for all
+ * 26,710 entries: each entry is tokenized once and only tested
+ * against the ports sharing a word with it, instead of all 536.
+ */
+class PortIndex(ports: List<Port>) {
+    /** word -> ports whose hints or game title contain the word. */
+    private val wordToPorts: Map<String, List<Port>> = buildMap<String, MutableList<Port>> {
+        for (port in ports) {
+            val words = mutableSetOf<String>()
+            words.addAll(titleWords(port.game))
+            for (hint in port.fileNameHints) {
+                words.addAll(
+                    normalizeForTokens(hint).split(NON_ALNUM_REGEX)
+                        .filter { it.isNotEmpty() }
+                )
+            }
+            for (word in words) {
+                getOrPut(word) { mutableListOf() }.add(port)
+            }
+        }
+    }.mapValues { it.value.toList() }
+
+    /**
+     * Ports that could match without sharing a word: no hints (the
+     * "no file info" early return) or a regex. Empty for the live
+     * catalog; kept so the index never loses a true positive if the
+     * catalog changes.
+     */
+    private val alwaysCandidates: List<Port> =
+        ports.filter { it.fileNameHints.isEmpty() || it.fileNameRegex != null }
+
+    /** The ports that could match this file name (a superset). */
+    fun candidatesFor(fileName: String): List<Port> {
+        val out = LinkedHashSet<Port>()
+        out.addAll(alwaysCandidates)
+        for (word in fileNameWords(fileName)) {
+            wordToPorts[word]?.let { out.addAll(it) }
+            // Prefix rule: a hint of 5+ letters may be a prefix of
+            // the file word, so look up every prefix of length >= 5
+            // as well.
+            if (word.length >= 5) {
+                for (len in 5..word.length) {
+                    wordToPorts[word.substring(0, len)]?.let { out.addAll(it) }
+                }
+            }
+        }
+        return out.toList()
+    }
+
+    /** Number of distinct indexed words (for diagnostics/tests). */
+    fun indexedWordCount(): Int = wordToPorts.size
+}

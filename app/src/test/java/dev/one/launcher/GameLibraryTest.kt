@@ -19,7 +19,6 @@ import dev.one.launcher.data.STAR_CACHE_TTL_MS
 import dev.one.launcher.data.dedupeGameFiles
 import dev.one.launcher.data.fileSourceLabel
 import dev.one.launcher.data.filterGames
-import dev.one.launcher.data.gamesWithFiles
 import dev.one.launcher.data.groupPortsByGame
 import dev.one.launcher.data.hintsFromGameTitle
 import dev.one.launcher.data.isPairingCacheUsable
@@ -573,7 +572,7 @@ class GameLibraryTest {
         val games = groupPortsByGame(listOf(eidos, pokopia, arceus))
         val eidosGame = games.first { it.title == "Pokémon Black & White" }
         val pokopiaGame = games.first { it.title == "Pokopia" }
-        val keys = gamesWithFiles(
+        val keys = pairGamesWithFiles(
             games = games,
             cloudItems = listOf(
                 PremiumizeItem(name = "Pokémon Pokopia [0400A3A01EE4C000][v655360].nup")
@@ -590,7 +589,7 @@ class GameLibraryTest {
             ),
             detected = emptyMap(),
             localStates = emptyMap()
-        )
+        ).keys
         assertTrue(keys.contains(eidosGame.key))
         assertTrue(keys.contains(pokopiaGame.key))
         assertEquals(2, keys.size)
@@ -600,7 +599,7 @@ class GameLibraryTest {
     fun gamesWithFilesFilterBlocksGameWithNoFiles() {
         val games = groupPortsByGame(listOf(eidos, pokopia, arceus))
         val arceusGame = games.first { it.title == "Pokémon Legends: Arceus" }
-        val keys = gamesWithFiles(
+        val keys = pairGamesWithFiles(
             games = games,
             cloudItems = emptyList(),
             cloudFallback = emptyMap(),
@@ -615,7 +614,7 @@ class GameLibraryTest {
             ),
             detected = emptyMap(),
             localStates = emptyMap()
-        )
+        ).keys
         assertFalse(keys.contains(arceusGame.key))
         assertEquals(1, keys.size)
     }
@@ -630,7 +629,7 @@ class GameLibraryTest {
             "magnet:?xt=urn:btih:9c6e87aaca8a26f4755d44079d5575b1732428f6" +
                 "&dn=Acorn%20-%20Archimedes"
         val games = groupPortsByGame(listOf(eidos, pokopia, arceus))
-        val keys = gamesWithFiles(
+        val keys = pairGamesWithFiles(
             games = games,
             cloudItems = emptyList(),
             cloudFallback = emptyMap(),
@@ -652,7 +651,7 @@ class GameLibraryTest {
             ),
             detected = emptyMap(),
             localStates = emptyMap()
-        )
+        ).keys
         assertTrue(keys.isEmpty())
         // And they never appear in a game's "Your files" either.
         val server = matchServerFilesForGame(
@@ -1629,14 +1628,14 @@ class GameLibraryTest {
         assertTrue(matchServerFilesForGame(sources, listOf(pokepark)).isEmpty())
         val games = groupPortsByGame(listOf(pokepark))
         assertTrue(
-            gamesWithFiles(
+            pairGamesWithFiles(
                 games = games,
                 cloudItems = emptyList(),
                 cloudFallback = emptyMap(),
                 serverSources = sources,
                 detected = emptyMap(),
                 localStates = emptyMap()
-            ).isEmpty()
+            ).keys.isEmpty()
         )
         assertTrue(
             pairGamesWithFiles(

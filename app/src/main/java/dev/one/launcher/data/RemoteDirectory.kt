@@ -1,13 +1,15 @@
 package dev.one.launcher.data
 
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.decodeFromStream
 import okhttp3.Credentials
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.InputStream
 import java.net.URI
 import java.util.concurrent.TimeUnit
 
@@ -156,6 +158,9 @@ private fun resolveUrl(base: String, ref: String): String? {
     }
 }
 
+private val HTML_ENTITY_REGEX = Regex("&#(\\d+);")
+private val STRIP_TAGS_REGEX = Regex("<[^>]*>")
+
 private fun unescapeHtml(text: String): String {
     var out = text
         .replace("&amp;", "&")
@@ -164,7 +169,7 @@ private fun unescapeHtml(text: String): String {
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&apos;", "'")
-    out = Regex("&#(\\d+);").replace(out) { match ->
+    out = HTML_ENTITY_REGEX.replace(out) { match ->
         val code = match.groupValues[1].toIntOrNull()
         if (code != null && code in 1..0xFFFF) code.toChar().toString() else match.value
     }
@@ -269,7 +274,7 @@ fun parseDirectoryListing(baseUrl: String, html: String): List<RemoteEntry> {
         val url = resolved.toString()
         if (!seen.add(url)) continue
         val inner = unescapeHtml(
-            match.groupValues[2].replace(Regex("<[^>]*>"), "")
+            match.groupValues[2].replace(STRIP_TAGS_REGEX, "")
         ).trim()
         var name = inner
         if (name.isEmpty()) {
@@ -294,6 +299,25 @@ fun parseDirectoryListing(baseUrl: String, html: String): List<RemoteEntry> {
 }
 
 /**
+ * Lightweight DTO for one entry of a plain JSON file list (v1.8.7):
+ * the wire shape decoded directly by kotlinx.serialization, without
+ * building a JsonObject DOM for the whole feed first. The fields are
+ * [JsonElement]s, not plain Strings, on purpose: a feed entry with a
+ * wrong-typed value (e.g. `"name": 42`, `"size": "big"`) must be
+ * skipped like before, not fail the whole list — so the lenient
+ * per-field checks from the old DOM walk live on in [dtosToListing]
+ * below, unchanged.
+ */
+@Serializable
+private data class RemoteEntryDto(
+    val name: JsonElement? = null,
+    val url: JsonElement? = null,
+    val kind: JsonElement? = null,
+    val category: JsonElement? = null,
+    val size: JsonElement? = null
+)
+
+/**
  * Parse a plain JSON file list: an array of objects with `name` and
  * `url` (both required strings). An entry may also carry an optional
  * `kind` ("magnet" or "file"; absent means "file"), an optional
@@ -309,25 +333,58 @@ fun parseDirectoryListing(baseUrl: String, html: String): List<RemoteEntry> {
  * Magnet entries (v1.8.0): a magnet entry's `url` is its full
  * magnet: URI, used as-is (it is already absolute — it is never
  * resolved against the feed URL).
+ *
+ * Streaming (v1.8.7): the feed is decoded straight into a list of
+ * [RemoteEntryDto]s — no intermediate ~22 MB String for an 11 MB
+ * feed, no JsonObject DOM of 26,710 entries — then mapped to
+ * [RemoteEntry] exactly as before.
  */
 fun parsePlainFileList(feedUrl: String, rawJson: String): RemoteListingResult {
     val json = Json { ignoreUnknownKeys = true }
-    val element = try {
-        json.parseToJsonElement(rawJson)
+    val dtos = try {
+        json.decodeFromString<List<RemoteEntryDto>>(rawJson)
     } catch (e: Exception) {
         return RemoteListingResult.Error(REMOTE_FOLDER_ERROR)
     }
-    if (element !is JsonArray) return RemoteListingResult.Error(REMOTE_FOLDER_ERROR)
-    if (element.isEmpty()) return RemoteListingResult.Listing(emptyList())
-    val entries = element.mapNotNull { item ->
-        if (item !is JsonObject) return@mapNotNull null
-        val namePrimitive = item["name"] as? JsonPrimitive
+    return dtosToListing(feedUrl, dtos)
+}
+
+/**
+ * Stream overload of [parsePlainFileList]: decodes the JSON straight
+ * from the response body stream ([Json.decodeFromStream]) instead of
+ * materializing the whole body as a String first. Same output and
+ * same error behavior as the String overload.
+ */
+@OptIn(ExperimentalSerializationApi::class)
+fun parsePlainFileList(feedUrl: String, stream: InputStream): RemoteListingResult {
+    val json = Json { ignoreUnknownKeys = true }
+    val dtos = try {
+        json.decodeFromStream<List<RemoteEntryDto>>(stream)
+    } catch (e: Exception) {
+        return RemoteListingResult.Error(REMOTE_FOLDER_ERROR)
+    }
+    return dtosToListing(feedUrl, dtos)
+}
+
+/**
+ * Map decoded DTOs to [RemoteEntry]s with the exact rules the old
+ * DOM walk applied: name/url must be non-blank strings (trimmed),
+ * relative URLs resolve against the feed URL (magnet: URIs are used
+ * as-is), kind/category are optional trimmed strings, size is an
+ * optional non-negative number (a string or negative size means
+ * "unknown"). Entries are sorted by lowercase name; an empty result
+ * is the plain error, and an empty array is an empty listing.
+ */
+private fun dtosToListing(feedUrl: String, dtos: List<RemoteEntryDto>): RemoteListingResult {
+    if (dtos.isEmpty()) return RemoteListingResult.Listing(emptyList())
+    val entries = dtos.mapNotNull { dto ->
+        val namePrimitive = dto.name as? JsonPrimitive
         val name = if (namePrimitive?.isString == true) {
             namePrimitive.content.takeIf { it.isNotBlank() }?.trim()
         } else {
             null
         }
-        val urlPrimitive = item["url"] as? JsonPrimitive
+        val urlPrimitive = dto.url as? JsonPrimitive
         val url = if (urlPrimitive?.isString == true) {
             urlPrimitive.content.takeIf { it.isNotBlank() }?.trim()
         } else {
@@ -338,7 +395,7 @@ fun parsePlainFileList(feedUrl: String, rawJson: String): RemoteListingResult {
         // else resolves against the feed URL.
         val resolved = if (isMagnetUrl(url)) url
         else resolveUrl(feedUrl, url) ?: return@mapNotNull null
-        val kindPrimitive = item["kind"] as? JsonPrimitive
+        val kindPrimitive = dto.kind as? JsonPrimitive
         val kind = if (kindPrimitive?.isString == true) {
             kindPrimitive.content.takeIf { it.isNotBlank() }?.trim()
         } else {
@@ -349,7 +406,7 @@ fun parsePlainFileList(feedUrl: String, rawJson: String): RemoteListingResult {
         // - Wii - NKit RVZ [zstd-19-128k]", or an r-roms category).
         // Kept so magnet dedup can prefer the entry whose category
         // platform matches the game's platform (v1.8.5).
-        val categoryPrimitive = item["category"] as? JsonPrimitive
+        val categoryPrimitive = dto.category as? JsonPrimitive
         val category = if (categoryPrimitive?.isString == true) {
             categoryPrimitive.content.takeIf { it.isNotBlank() }?.trim()
         } else {
@@ -360,7 +417,7 @@ fun parsePlainFileList(feedUrl: String, rawJson: String): RemoteListingResult {
         // JsonPrimitive has no longOrNull in kotlinx-serialization
         // 1.7.3, so parse the content text — guarded by isString, so a
         // JSON string like "123" is not mistaken for a size.
-        val sizePrimitive = item["size"] as? JsonPrimitive
+        val sizePrimitive = dto.size as? JsonPrimitive
         val size = if (sizePrimitive != null && !sizePrimitive.isString) {
             sizePrimitive.content.toLongOrNull()?.takeIf { it >= 0 }
         } else {
@@ -373,6 +430,66 @@ fun parsePlainFileList(feedUrl: String, rawJson: String): RemoteListingResult {
     }
     if (entries.isEmpty()) return RemoteListingResult.Error(REMOTE_FOLDER_ERROR)
     return RemoteListingResult.Listing(entries.sortedBy { it.name.lowercase() })
+}
+
+/**
+ * How many leading bytes [parseRemoteStream] may scan while sniffing
+ * for the first non-whitespace byte. A JSON feed starts with `[` or
+ * `{` after at most a few whitespace bytes; 64 KB covers any sane
+ * leading whitespace, and anything beyond that is refused rather
+ * than read into memory.
+ */
+private const val STREAM_SNIFF_LIMIT = 65536
+
+/** True for the four JSON whitespace bytes (space, tab, LF, CR). */
+private fun isJsonWhitespace(byte: Int): Boolean =
+    byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D
+
+/**
+ * Parse a fetched remote-folder body straight from its stream
+ * (v1.8.7): sniff the first non-whitespace byte (mark/reset, no
+ * buffering of the whole body) to decide the shape, then decode a
+ * JSON feed from the stream ([parsePlainFileList]) or read the body
+ * as text for the HTML directory-listing path. Same result and same
+ * error behavior as [parseRemoteBody] — a body that is neither a
+ * JSON array/object nor a recognizable directory listing gets the
+ * plain error. Pure function — unit-tested with byte streams.
+ */
+@OptIn(ExperimentalSerializationApi::class)
+internal fun parseRemoteStream(feedUrl: String, stream: InputStream): RemoteListingResult {
+    val buffered = stream.buffered()
+    return try {
+        buffered.mark(STREAM_SNIFF_LIMIT)
+        var first = -1
+        var byte: Int
+        while (buffered.read().also { byte = it } != -1) {
+            if (!isJsonWhitespace(byte)) {
+                first = byte
+                break
+            }
+        }
+        buffered.reset()
+        when {
+            first == -1 -> RemoteListingResult.Error(REMOTE_FOLDER_ERROR)
+            first == '['.code || first == '{'.code ->
+                parsePlainFileList(feedUrl, buffered)
+            else -> {
+                val body = buffered.readBytes().toString(Charsets.UTF_8)
+                if (!looksLikeDirectoryListing(body)) {
+                    RemoteListingResult.Error(REMOTE_FOLDER_ERROR)
+                } else {
+                    val entries = parseDirectoryListing(feedUrl, body)
+                    if (entries.isEmpty()) {
+                        RemoteListingResult.Error(REMOTE_FOLDER_ERROR)
+                    } else {
+                        RemoteListingResult.Listing(entries)
+                    }
+                }
+            }
+        }
+    } catch (e: Exception) {
+        RemoteListingResult.Error(REMOTE_FOLDER_ERROR)
+    }
 }
 
 /** Fetches one remote folder URL and parses it as a listing or file list. */
@@ -397,9 +514,15 @@ class RemoteDirectoryApi(private val client: OkHttpClient = defaultClient()) {
                     }
                     return RemoteListingResult.Error(REMOTE_FOLDER_ERROR)
                 }
-                val body = response.body?.string()
+                val bodyStream = response.body?.byteStream()
                     ?: return RemoteListingResult.Error(REMOTE_FOLDER_ERROR)
-                parseRemoteBody(url, body)
+                // Streaming (v1.8.7): a JSON feed is decoded straight
+                // from the response byte stream — the old
+                // response.body?.string() allocated a ~22 MB UTF-16
+                // String for the 11 MB remote.json before parsing
+                // even started. The HTML listing path still reads
+                // the body as text, inside parseRemoteStream.
+                bodyStream.buffered().use { parseRemoteStream(url, it) }
             }
         } catch (e: Exception) {
             RemoteListingResult.Error(REMOTE_FOLDER_ERROR)

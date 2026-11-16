@@ -1,7 +1,9 @@
 package dev.one.launcher.data
 
-import kotlinx.serialization.encodeToString
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromStream
+import kotlinx.serialization.json.encodeToStream
 import java.io.File
 
 /**
@@ -33,6 +35,7 @@ import java.io.File
  *
  * Pure file I/O, no Android framework — unit-tested with a temp dir.
  */
+@OptIn(ExperimentalSerializationApi::class)
 class RemoteListingsCache(
     private val cacheDir: File
 ) {
@@ -41,28 +44,43 @@ class RemoteListingsCache(
         encodeDefaults = true
     }
 
+    private val unsafeCharsRegex = Regex("[^a-zA-Z0-9_-]")
+
     private fun fileFor(sourceId: String): File {
-        val safe = sourceId.replace(Regex("[^a-zA-Z0-9_-]"), "_")
+        val safe = sourceId.replace(unsafeCharsRegex, "_")
         return File(cacheDir, "remote-listings-$safe.json")
     }
 
-    /** The cached entries for a source, or null when there is no cache. */
+    /**
+     * The cached entries for a source, or null when there is no cache.
+     *
+     * Streaming (v1.8.7): decoded straight from the file stream
+     * ([Json.decodeFromStream]) — the old readText() allocated the
+     * whole listing as one String before parsing. The file layout is
+     * unchanged, so a cache written by v1.8.5/v1.8.6 still loads.
+     */
     fun load(sourceId: String): List<RemoteEntry>? {
         val file = fileFor(sourceId)
         if (!file.exists()) return null
         return try {
-            json.decodeFromString<List<RemoteEntry>>(file.readText())
+            file.inputStream().buffered().use { json.decodeFromStream<List<RemoteEntry>>(it) }
         } catch (_: Exception) {
             null
         }
     }
 
-    /** Persist a source's parsed entries. Overwrites any older cache. */
+    /**
+     * Persist a source's parsed entries. Overwrites any older cache.
+     *
+     * Streaming (v1.8.7): encoded straight to the file stream
+     * ([Json.encodeToStream]) — the old encodeToString() built the
+     * whole listing as one String first. Same file layout as before.
+     */
     fun save(sourceId: String, entries: List<RemoteEntry>) {
         val file = fileFor(sourceId)
         try {
             cacheDir.mkdirs()
-            file.writeText(json.encodeToString(entries))
+            file.outputStream().buffered().use { json.encodeToStream(entries, it) }
         } catch (_: Exception) {
             // A cache write must never break the listing itself.
         }
