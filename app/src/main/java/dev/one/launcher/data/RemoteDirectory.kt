@@ -113,7 +113,7 @@ private fun unescapeHtml(text: String): String {
 
 private val LINK_REGEX = Regex(
     """<a\s+[^>]*?href\s*=\s*"([^"]+)"[^>]*>(.*?)</a>""",
-    setOf(RegexOption.IGNORE_CASE, RegexOption.DOTALL)
+    setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
 )
 
 /**
@@ -194,10 +194,19 @@ fun parsePlainFileList(feedUrl: String, rawJson: String): RemoteListingResult {
     if (element.isEmpty()) return RemoteListingResult.Listing(emptyList())
     val entries = element.mapNotNull { item ->
         if (item !is JsonObject) return@mapNotNull null
-        val name = (item["name"] as? JsonPrimitive)?.contentOrNull
-            ?.takeIf { it.isNotBlank() }?.trim() ?: return@mapNotNull null
-        val url = (item["url"] as? JsonPrimitive)?.contentOrNull
-            ?.takeIf { it.isNotBlank() }?.trim() ?: return@mapNotNull null
+        val namePrimitive = item["name"] as? JsonPrimitive
+        val name = if (namePrimitive?.isString == true) {
+            namePrimitive.content.takeIf { it.isNotBlank() }?.trim()
+        } else {
+            null
+        }
+        val urlPrimitive = item["url"] as? JsonPrimitive
+        val url = if (urlPrimitive?.isString == true) {
+            urlPrimitive.content.takeIf { it.isNotBlank() }?.trim()
+        } else {
+            null
+        }
+        if (name == null || url == null) return@mapNotNull null
         val resolved = resolveUrl(feedUrl, url) ?: return@mapNotNull null
         RemoteEntry(name = name, url = resolved, isFolder = false)
     }
