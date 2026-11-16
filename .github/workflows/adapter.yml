@@ -1,0 +1,83 @@
+# adapter.yml -- GitHub Actions workflow for the Portside/ONE JSON adapter.
+#
+# Runs json-adapter.py on a schedule and publishes the output remote.json
+# to GitHub Pages, so the app can point a Remote folder at a stable URL:
+#   https://<user>.github.io/<repo>/remote.json
+#
+# Setup (once):
+#   1. Put json-adapter.py at this repo's root and this file at
+#      .github/workflows/adapter.yml.
+#   2. Set the ADAPTER_BASE_URL repository variable to your site's root
+#      URL (Settings > Secrets and variables > Actions > Variables).
+#      Example: https://your-mirror.example.com  (or http://host:port)
+#   3. Enable GitHub Pages with "GitHub Actions" as the source
+#      (Settings > Pages).
+#   4. Run it once by hand (Actions > Remote JSON adapter > Run workflow)
+#      to confirm the JSON publishes, then point a Remote folder in the
+#      app at the Pages URL above.
+#
+# IMPORTANT: GitHub-hosted runners can only reach your site if it is
+# publicly accessible. If your site is localhost-only, run this workflow
+# on a self-hosted runner instead -- change `runs-on: ubuntu-latest`
+# to `runs-on: self-hosted` in the build job (and install a runner on
+# the machine that can reach your site). Otherwise use the cron option.
+#
+# If the site is temporarily down, the run fails and the previously
+# published remote.json stays live on Pages.
+
+name: Remote JSON adapter
+
+on:
+  schedule:
+    # Daily at 06:00 UTC. Adjust to taste.
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run the adapter
+        env:
+          ADAPTER_BASE_URL: ${{ vars.ADAPTER_BASE_URL }}
+        run: |
+          if [ -z "$ADAPTER_BASE_URL" ]; then
+            echo "ADAPTER_BASE_URL is not set. Set it as a repository variable (Settings > Secrets and variables > Actions > Variables)." >&2
+            exit 1
+          fi
+          mkdir -p pages
+          python3 json-adapter.py --base-url "$ADAPTER_BASE_URL" --output pages/remote.json
+          ls -la pages/remote.json
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
