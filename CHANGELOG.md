@@ -1,5 +1,59 @@
 # Changelog
 
+## v1.2.0 — 2026-11-15
+
+Detail page now shows your files in two sections — Premiumize and Local —
+a settable local game-files folder with presearch and caching, and file
+badges on Library cards and the detail header.
+
+- Detail page, "Premiumize" section: when connected, lists the files in
+  your Premiumize cloud matching this port, each with a "Download to this
+  device" button (reuses the existing cloud download). The list comes from
+  one `/item/listall` call per connected session, cached in the ViewModel
+  and matched locally with `PortMatcher`, so one call covers every port
+  (Library badges use the same data). If `listAll` fails, the page falls
+  back to an own-cloud search for that port's first filename hint. A file
+  already in Downloads/ONE shows as "Downloaded". Not connected: "Connect
+  Premiumize from the Cloud tab to see your cloud files here." plus a
+  button that opens the Cloud tab. No cloud match: "No file for this port
+  in your Premiumize cloud yet."
+- Detail page, "Local" section (replaces "Locate my file"): lists files
+  matching this port from Downloads/ONE (with Extract for confirmed
+  archives, as before), from your chosen local folder ("Found in your
+  folder"), and your picked file ("Picked file") — each row shows where
+  the file is and how it matches ("file" / "archive" / "archive —
+  contains .z64"). A folder zip offers "Copy to Downloads/ONE", after
+  which the existing inspect/extract path applies. The file picker stays
+  as a "Browse…" button at the bottom. Nothing local: "No file on this
+  device yet — set a local folder in Settings, or browse for a file."
+- Settings, "Local game files folder": pick a folder (Storage Access
+  Framework tree picker, persistable read permission). ONE pre-searches
+  it — top level plus one level of subfolders, max 500 files, on a
+  background thread — and caches the detected file/port pairs in
+  DataStore, so badges show instantly on a cold start and are replaced
+  by fresh results once the background re-scan finishes. Scans run on
+  launch (when a folder is set), on folder set/change, and inside every
+  library refresh. If the folder becomes unreadable, Settings and the
+  detail page say "Folder unavailable — pick it again" and the cached
+  pairs stay visible (stale, never silently dropped). Clearing the
+  folder clears detection; clearing matched files clears picked files
+  only, never detection. Folder zips are name-based provisional matches
+  only — SAF files are not `java.io.File`, so a zip is confirmed only
+  once it is copied into Downloads/ONE.
+- File badges: Library cards and the detail header now show a second
+  chip beside the StatusChip — "File on device" when a local, downloaded,
+  or picked file exists, "File in cloud" when a matching file exists in
+  Premiumize but no file is on this device yet, nothing when neither.
+  The StatusChip text and the meaning of "Ready to play" (installed +
+  file) are unchanged.
+- Tests: unit tests for the pure folder mapping (file-name list + ports
+  → detected pairs, incl. archives and non-matches) and for the cache
+  merge (cached pairs shown on start, replaced by fresh scan, stale
+  cache kept when the folder is unavailable). The SAF scan itself cannot
+  run on the JVM — no test fakes it.
+- Premiumize scope unchanged (own cloud only); custom links stay
+  browser-only.
+
 ## v1.1.0 — 2026-11-15
 
 Archive matching, refresh controls, a visible paired-files list, and a

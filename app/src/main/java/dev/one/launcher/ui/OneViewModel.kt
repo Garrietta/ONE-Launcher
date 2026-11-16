@@ -11,11 +11,15 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import dev.one.launcher.data.CustomLink
 import dev.one.launcher.data.CustomLinksStore
+import dev.one.launcher.data.DetectedFile
 import dev.one.launcher.data.DownloadRepository
 import dev.one.launcher.data.DownloadState
 import dev.one.launcher.data.GitHubAsset
 import dev.one.launcher.data.GitHubRelease
 import dev.one.launcher.data.GitHubReleasesApi
+import dev.one.launcher.data.LocalFolder
+import dev.one.launcher.data.LocalFolderScanner
+import dev.one.launcher.data.LocalFolderStore
 import dev.one.launcher.data.MatchKind
 import dev.one.launcher.data.MatchedFile
 import dev.one.launcher.data.MatchedFilesStore
@@ -33,6 +37,7 @@ import dev.one.launcher.data.SecureKeyStore
 import dev.one.launcher.data.compareVersions
 import dev.one.launcher.data.normalizeCustomLinkUrl
 import dev.one.launcher.data.pickApkAsset
+import dev.one.launcher.data.resolveDetected
 import dev.one.launcher.model.Port
 import dev.one.launcher.model.PortCatalog
 import kotlinx.coroutines.Dispatchers
@@ -51,10 +56,17 @@ data class PortStatus(
     /** How the downloaded file relates to this port, if it is an archive. */
     val downloadedMatchKind: MatchKind? = null,
     /** For a confirmed zip: the matching ROM entry inside it. */
-    val downloadedInnerEntry: String? = null
+    val downloadedInnerEntry: String? = null,
+    /**
+     * First file found for this port in the user's local game-files
+     * folder, if any. Detection only — it is not a user assignment, and
+     * clearing assignments never clears it.
+     */
+    val detectedFile: DetectedFile? = null
 ) {
     val isInstalled: Boolean get() = installedPackage != null
-    val hasFile: Boolean get() = assignedFile != null || downloadedFileName != null
+    val hasFile: Boolean get() =
+        assignedFile != null || downloadedFileName != null || detectedFile != null
     val isReady: Boolean get() = isInstalled && hasFile
     val statusText: String
         get() = when {
@@ -103,6 +115,7 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     private val downloadRepo = DownloadRepository(application)
     private val releasesApi = GitHubReleasesApi()
     private val customLinksStore = CustomLinksStore(application)
+    private val localFolderStore = LocalFolderStore(application)
 
     // StateFlows must be declared before init: init calls refreshLibrary(),
     // and Kotlin initializes properties and init blocks in declaration order,
@@ -182,6 +195,55 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     private val _customLinkError = MutableStateFlow<String?>(null)
     val customLinkError: StateFlow<String?> = _customLinkError.asStateFlow()
 
+    /**
+     * Flat list of every file in the user's Premiumize cloud
+     * (/item/listall), fetched once per connected session. Detail pages
+     * and Library badges match against it locally with PortMatcher, so
+     * one call covers every port.
+     */
+    private val _cloudAllFiles = MutableStateFlow<List<PremiumizeItem>>(emptyList())
+    val cloudAllFiles: StateFlow<List<PremiumizeItem>> = _cloudAllFiles.asStateFlow()
+
+    private val _cloudAllLoading = MutableStateFlow(false)
+    val cloudAllLoading: StateFlow<Boolean> = _cloudAllLoading.asStateFlow()
+
+    /** True once a listAll attempt has finished (success or failure). */
+    private val _cloudAllLoaded = MutableStateFlow(false)
+    val cloudAllLoaded: StateFlow<Boolean> = _cloudAllLoaded.asStateFlow()
+
+    /**
+     * Per-port fallback when listAll fails: search results for that
+     * port's first filename hint, keyed by port id.
+     */
+    private val _cloudFallback = MutableStateFlow<Map<String, List<PremiumizeItem>>>(emptyMap())
+    val cloudFallback: StateFlow<Map<String, List<PremiumizeItem>>> =
+        _cloudFallback.asStateFlow()
+
+    /** The user's chosen local game-files folder, if one is set. */
+    private val _localFolder = MutableStateFlow<LocalFolder?>(null)
+    val localFolder: StateFlow<LocalFolder?> = _localFolder.asStateFlow()
+
+    /**
+     * True when a folder is set but could not be read on the last scan
+     * (permission lost / folder gone). The cached pairs stay visible
+     * while this is true — they are stale, never dropped.
+     */
+    private val _localFolderUnavailable = MutableStateFlow(false)
+    val localFolderUnavailable: StateFlow<Boolean> = _localFolderUnavailable.asStateFlow()
+
+    /** Detected file/port pairs from the local folder (port id -> files). */
+    private val _detectedLocalFiles =
+        MutableStateFlow<Map<String, List<DetectedFile>>>(emptyMap())
+    val detectedLocalFiles: StateFlow<Map<String, List<DetectedFile>>> =
+        _detectedLocalFiles.asStateFlow()
+
+    /** Copy-to-Downloads result message per port, shown on the detail page. */
+    private val _copyMessage = MutableStateFlow<Map<String, String>>(emptyMap())
+    val copyMessage: StateFlow<Map<String, String>> = _copyMessage.asStateFlow()
+
+    /** Guards the background folder scan so refreshes cannot stack scans. */
+    private var localScanRunning = false
+
     /** (folder id, display name), root first. */
     private val folderStack = mutableListOf<Pair<String?, String>>(null to "My cloud")
 
@@ -211,6 +273,18 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
         if (secureKeyStore.getApiKey() != null) {
             viewModelScope.launch { restoreSession() }
         }
+        // Local game-files folder: show the cached pairs immediately so
+        // badges render on a cold start, then re-scan in the background
+        // and replace them with fresh results.
+        viewModelScope.launch {
+            val folder = localFolderStore.loadFolder()
+            _localFolder.value = folder
+            val cached = localFolderStore.loadCachedDetected()
+            _detectedLocalFiles.value =
+                resolveDetected(cached, fresh = null, folderAvailable = folder != null)
+            rebuildStatuses()
+            if (folder != null) scanLocalFolder()
+        }
     }
 
     // ---- Library ----
@@ -222,6 +296,14 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     fun portById(id: String): Port? = ports.firstOrNull { it.id == id }
 
     fun refreshLibrary() {
+        rebuildStatuses()
+        // Re-scan the local folder in the background when one is set, so
+        // a file the user just added shows up without re-picking it.
+        scanLocalFolder()
+    }
+
+    /** Rebuilds every port's status from the current on-device state. */
+    fun rebuildStatuses() {
         val pm = getApplication<Application>().packageManager
         val downloadedFiles = downloadRepo.listDownloadedFiles()
         val downloadedNames = downloadedFiles.map { it.name }
@@ -277,7 +359,8 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
                 assignedFile = assigned[port.id],
                 downloadedFileName = matchName,
                 downloadedMatchKind = matchKind,
-                downloadedInnerEntry = innerEntry
+                downloadedInnerEntry = innerEntry,
+                detectedFile = _detectedLocalFiles.value[port.id]?.firstOrNull()
             )
         }
         _portStatuses.value = statuses
@@ -360,6 +443,111 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
         refreshLibrary()
     }
 
+    // ---- Local game-files folder (emulator-style ROMs folder) ----
+
+    fun setLocalFolder(uri: Uri, displayName: String) {
+        try {
+            getApplication<Application>().contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        } catch (e: Exception) {
+            // Persisting the permission is best-effort; the scan below
+            // reports the folder unavailable if it cannot be read.
+        }
+        val folder = LocalFolder(uri = uri.toString(), displayName = displayName)
+        viewModelScope.launch {
+            localFolderStore.saveFolder(folder)
+            _localFolder.value = folder
+            _localFolderUnavailable.value = false
+            scanLocalFolder()
+        }
+    }
+
+    /**
+     * Clears the folder choice and its cached pairs. Detection only —
+     * user assignments are untouched by this.
+     */
+    fun clearLocalFolder() {
+        viewModelScope.launch {
+            localFolderStore.saveFolder(null)
+            localFolderStore.clearDetected()
+            _localFolder.value = null
+            _localFolderUnavailable.value = false
+            _detectedLocalFiles.value = emptyMap()
+            rebuildStatuses()
+        }
+    }
+
+    /**
+     * Background re-scan of the chosen folder. A null scan result means
+     * the folder could not be read: the cached pairs stay visible and
+     * the folder is flagged unavailable instead of being emptied.
+     */
+    fun scanLocalFolder() {
+        val folder = _localFolder.value ?: return
+        if (localScanRunning) return
+        localScanRunning = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val fresh = LocalFolderScanner.scan(
+                getApplication<Application>(),
+                Uri.parse(folder.uri),
+                ports
+            )
+            withContext(Dispatchers.Main) {
+                localScanRunning = false
+                if (fresh == null) {
+                    _localFolderUnavailable.value = true
+                    _detectedLocalFiles.value = resolveDetected(
+                        cached = _detectedLocalFiles.value,
+                        fresh = null,
+                        folderAvailable = false
+                    )
+                } else {
+                    _localFolderUnavailable.value = false
+                    _detectedLocalFiles.value = resolveDetected(
+                        cached = _detectedLocalFiles.value,
+                        fresh = fresh,
+                        folderAvailable = true
+                    )
+                    viewModelScope.launch { localFolderStore.saveDetected(fresh) }
+                    rebuildStatuses()
+                }
+            }
+        }
+    }
+
+    /**
+     * Copy a file found in the local folder into Downloads/ONE, so the
+     * existing inspect/extract path applies to it. The copy moves the
+     * user's own file between two places on their own device.
+     */
+    fun copyDetectedToDownloads(portId: String, detected: DetectedFile) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val app = getApplication<Application>()
+                val target = File(downloadRepo.downloadsDir(), detected.name)
+                app.contentResolver.openInputStream(Uri.parse(detected.uri))?.use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                } ?: throw IllegalStateException("Could not open ${detected.name}.")
+                withContext(Dispatchers.Main) {
+                    _copyMessage.value = _copyMessage.value +
+                        (portId to "Copied ${detected.name} to Downloads/ONE.")
+                    refreshLibrary()
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    _copyMessage.value = _copyMessage.value +
+                        (portId to "Could not copy ${detected.name}: ${e.message ?: "unknown error"}")
+                }
+            }
+        }
+    }
+
+    fun dismissCopyMessage(portId: String) {
+        _copyMessage.value = _copyMessage.value - portId
+    }
+
     // ---- Per-port settings ----
 
     fun settings(portId: String): Flow<PortSettings> = settingsStore.settings(portId)
@@ -384,6 +572,7 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
                 if (result.value.status == "success" || result.value.customer_id.isNotEmpty()) {
                     _pmAccount.value = result.value
                     browseFolder(null)
+                    refreshCloudFiles()
                 } else {
                     _pmError.value = "Your saved Premiumize key was not accepted. Re-enter it below."
                 }
@@ -412,6 +601,7 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
                         folderStack.add(null to "My cloud")
                         _folderTrail.value = listOf("My cloud")
                         browseFolder(null)
+                        refreshCloudFiles()
                     } else {
                         _pmError.value = "That key was not accepted. Check it and try again."
                     }
@@ -427,6 +617,9 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
         _pmAccount.value = null
         _pmError.value = null
         _cloudItems.value = emptyList()
+        _cloudAllFiles.value = emptyList()
+        _cloudAllLoaded.value = false
+        _cloudFallback.value = emptyMap()
         _cloudBreadcrumbs.value = emptyList()
         _searchResults.value = null
         _downloadProgress.value = emptyMap()
@@ -496,6 +689,64 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
             searchCloud(lastSearchQuery)
         } else {
             browseFolder(folderStack.last().first)
+        }
+    }
+
+    /**
+     * Fetch the flat list of every file in the user's own Premiumize
+     * cloud (/item/listall), once per connected session. Detail pages
+     * and Library badges match against it locally, so one call covers
+     * every port. Folders are dropped — only files can match a port.
+     */
+    fun refreshCloudFiles() {
+        val api = api() ?: return
+        if (_cloudAllLoading.value) return
+        _cloudAllLoading.value = true
+        viewModelScope.launch {
+            when (val result = api.listAll()) {
+                is PremiumizeResult.Success -> {
+                    _cloudAllFiles.value =
+                        result.value.files.filter { it.type != "folder" }
+                    _cloudFallback.value = emptyMap()
+                }
+                is PremiumizeResult.Failure -> {
+                    _cloudAllFiles.value = emptyList()
+                }
+            }
+            _cloudAllLoaded.value = true
+            _cloudAllLoading.value = false
+        }
+    }
+
+    /**
+     * Make sure this port's cloud files are available for its detail
+     * page: fetch the flat list if it has not been fetched yet, or fall
+     * back to a per-port own-cloud search when listAll failed (or came
+     * back empty) for this port.
+     */
+    fun ensureCloudFilesFor(port: Port) {
+        if (!isCloudConnected) return
+        if (!_cloudAllLoaded.value) {
+            refreshCloudFiles()
+            return
+        }
+        if (_cloudAllFiles.value.isEmpty() && _cloudFallback.value[port.id] == null) {
+            val api = api() ?: return
+            viewModelScope.launch { searchCloudFallback(port, api) }
+        }
+    }
+
+    private suspend fun searchCloudFallback(port: Port, api: PremiumizeApi) {
+        val query = port.fileNameHints.firstOrNull() ?: port.title
+        when (val result = api.searchOwnCloud(query)) {
+            is PremiumizeResult.Success -> {
+                _cloudFallback.value = _cloudFallback.value +
+                    (port.id to result.value.content.filter { it.type != "folder" })
+            }
+            is PremiumizeResult.Failure -> {
+                // Leave the fallback empty: the detail page shows the
+                // "no file in your cloud yet" line rather than an error.
+            }
         }
     }
 

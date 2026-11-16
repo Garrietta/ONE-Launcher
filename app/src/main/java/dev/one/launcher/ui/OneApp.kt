@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
+import androidx.documentfile.provider.DocumentFile
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -198,6 +199,11 @@ fun OneApp(viewModel: OneViewModel) {
                             } else {
                                 navController.navigate("detail/$id")
                             }
+                        },
+                        onGoToCloud = {
+                            navController.navigate(OneDestination.Cloud.route) {
+                                launchSingleTop = true
+                            }
                         }
                     )
                 }
@@ -222,6 +228,11 @@ fun OneApp(viewModel: OneViewModel) {
                         GameDetailContent(
                             viewModel = viewModel,
                             port = port,
+                            onGoToCloud = {
+                                navController.navigate(OneDestination.Cloud.route) {
+                                    launchSingleTop = true
+                                }
+                            },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .padding(innerPadding)
@@ -249,10 +260,12 @@ fun OneApp(viewModel: OneViewModel) {
 private fun LibraryScreen(
     viewModel: OneViewModel,
     unfolded: Boolean,
-    onOpenDetail: (String) -> Unit
+    onOpenDetail: (String) -> Unit,
+    onGoToCloud: () -> Unit
 ) {
     val statuses by viewModel.portStatuses.collectAsState()
     val selectedId by viewModel.selectedPortId.collectAsState()
+    val cloudFiles by viewModel.cloudAllFiles.collectAsState()
 
     LaunchedEffect(Unit) { viewModel.refreshLibrary() }
 
@@ -261,6 +274,7 @@ private fun LibraryScreen(
             PortList(
                 ports = viewModel.ports,
                 statuses = statuses,
+                cloudFiles = cloudFiles,
                 selectedId = selectedId,
                 onSelect = onOpenDetail,
                 modifier = Modifier.weight(0.42f),
@@ -272,6 +286,7 @@ private fun LibraryScreen(
                 GameDetailContent(
                     viewModel = viewModel,
                     port = selected,
+                    onGoToCloud = onGoToCloud,
                     modifier = Modifier.weight(0.58f)
                 )
             } else {
@@ -287,6 +302,7 @@ private fun LibraryScreen(
         PortList(
             ports = viewModel.ports,
             statuses = statuses,
+            cloudFiles = cloudFiles,
             selectedId = selectedId,
             onSelect = onOpenDetail,
             modifier = Modifier.fillMaxSize(),
@@ -300,6 +316,7 @@ private fun LibraryScreen(
 private fun PortList(
     ports: List<Port>,
     statuses: Map<String, PortStatus>,
+    cloudFiles: List<PremiumizeItem>,
     selectedId: String?,
     onSelect: (String) -> Unit,
     modifier: Modifier,
@@ -341,6 +358,10 @@ private fun PortList(
                                 modifier = Modifier.weight(1f)
                             )
                             StatusChip(text = status?.statusText ?: "Not installed")
+                            val hasCloudFile = cloudFiles.any { item ->
+                                PortMatcher.matchKind(item.name, port) != null
+                            }
+                            FileBadge(status = status, hasCloudFile = hasCloudFile)
                         }
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(text = port.game, style = MaterialTheme.typography.bodyMedium)
@@ -351,6 +372,7 @@ private fun PortList(
                         )
                         val fileName = status?.assignedFile?.name
                             ?: status?.downloadedFileName
+                            ?: status?.detectedFile?.name
                         if (fileName != null) {
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
@@ -381,6 +403,58 @@ private fun StatusChip(text: String) {
     }
 }
 
+/**
+ * File-only signal, next to the StatusChip — it never changes what
+ * "Ready to play" means (installed + file). "File on device" when a
+ * local, downloaded, or picked file exists for the port; "File in
+ * cloud" when a matching file exists in the Premiumize cloud but no
+ * file is on this device yet; nothing when neither.
+ */
+@Composable
+private fun FileBadge(status: PortStatus?, hasCloudFile: Boolean) {
+    val text = when {
+        status?.hasFile == true -> "File on device"
+        hasCloudFile -> "File in cloud"
+        else -> return
+    }
+    Spacer(modifier = Modifier.width(4.dp))
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        shape = MaterialTheme.shapes.small
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+        )
+    }
+}
+
+/** Short label for how a file relates to a port. */
+private fun matchKindLabel(kind: MatchKind, innerEntry: String? = null): String =
+    when (kind) {
+        MatchKind.DIRECT -> "file"
+        MatchKind.ARCHIVE_CONFIRMED -> "archive — contains $innerEntry"
+        MatchKind.ARCHIVE_PROVISIONAL -> "archive"
+    }
+
+/** One row in the detail page's Local section: name, where it is, how it matches. */
+@Composable
+private fun LocalFileRow(name: String, where: String, label: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Filled.Check, contentDescription = null)
+        Spacer(modifier = Modifier.width(8.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = name, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                text = "$where · $label",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
 // ---- Game detail ----
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -388,6 +462,7 @@ private fun StatusChip(text: String) {
 private fun GameDetailContent(
     viewModel: OneViewModel,
     port: Port,
+    onGoToCloud: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -401,10 +476,36 @@ private fun GameDetailContent(
     val extractMessages by viewModel.extractMessage.collectAsState()
     val settingsFlow = remember(port.id) { viewModel.settings(port.id) }
     val settings by settingsFlow.collectAsState(initial = PortSettings())
+    val pmAccount by viewModel.pmAccount.collectAsState()
+    val cloudAllFiles by viewModel.cloudAllFiles.collectAsState()
+    val cloudFallback by viewModel.cloudFallback.collectAsState()
+    val cloudAllLoading by viewModel.cloudAllLoading.collectAsState()
+    val cloudAllLoaded by viewModel.cloudAllLoaded.collectAsState()
+    val downloadProgress by viewModel.downloadProgress.collectAsState()
+    val downloadError by viewModel.downloadError.collectAsState()
+    val detectedFiles by viewModel.detectedLocalFiles.collectAsState()
+    val localFolderUnavailable by viewModel.localFolderUnavailable.collectAsState()
+    val copyMessages by viewModel.copyMessage.collectAsState()
+    val confirmedArchives by viewModel.confirmedArchives.collectAsState()
+
+    // Cloud files matching this port: the flat listAll cache first, the
+    // per-port search fallback when listAll failed for this port.
+    val cloudMatches = cloudAllFiles.mapNotNull { item ->
+        PortMatcher.matchKind(item.name, port)?.let { item to it }
+    }.ifEmpty {
+        (cloudFallback[port.id].orEmpty()).mapNotNull { item ->
+            PortMatcher.matchKind(item.name, port)?.let { item to it }
+        }
+    }
 
     // Fetch the latest release when this detail page opens; the ViewModel
     // caches per port for the session, so reopening does not re-hit GitHub.
-    LaunchedEffect(port.id) { viewModel.fetchRelease(port.id) }
+    // Also make sure this port's cloud files are loaded for the
+    // Premiumize section below.
+    LaunchedEffect(port.id) {
+        viewModel.fetchRelease(port.id)
+        viewModel.ensureCloudFilesFor(port)
+    }
 
     var fps by remember(settings) { mutableStateOf(settings.fpsCap) }
     var scale by remember(settings) { mutableStateOf(settings.resolutionScale) }
@@ -436,7 +537,13 @@ private fun GameDetailContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(modifier = Modifier.height(12.dp))
-        StatusChip(text = status?.statusText ?: "Not installed")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StatusChip(text = status?.statusText ?: "Not installed")
+            FileBadge(
+                status = status,
+                hasCloudFile = cloudMatches.isNotEmpty()
+            )
+        }
 
         if (launchError != null) {
             Spacer(modifier = Modifier.height(8.dp))
@@ -468,37 +575,168 @@ private fun GameDetailContent(
             text = "Filename hints: ${port.fileNameHints.joinToString(", ")}",
             style = MaterialTheme.typography.bodySmall
         )
-        Spacer(modifier = Modifier.height(8.dp))
-        val assignedName = status?.assignedFile?.name ?: status?.downloadedFileName
-        if (assignedName != null) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.Check, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(text = assignedName, modifier = Modifier.weight(1f))
+
+        // ---- Premiumize: cloud files matching this port ----
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(text = "Premiumize", style = MaterialTheme.typography.titleSmall)
+        if (pmAccount == null) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Connect Premiumize from the Cloud tab to see your cloud files here.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            OutlinedButton(onClick = onGoToCloud) {
+                Text("Go to Cloud")
             }
-            if (status?.downloadedFileName != null && status.assignedFile == null) {
-                when (status.downloadedMatchKind) {
-                    MatchKind.ARCHIVE_CONFIRMED -> {
+        } else if (cloudAllLoading && !cloudAllLoaded) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(text = "Checking your cloud…", style = MaterialTheme.typography.bodyMedium)
+        } else if (cloudMatches.isEmpty()) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "No file for this port in your Premiumize cloud yet.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        } else {
+            cloudMatches.forEach { (item, kind) ->
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Cloud, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(text = item.name, style = MaterialTheme.typography.bodyMedium)
+                        val confirmedEntry =
+                            if (kind == MatchKind.ARCHIVE_PROVISIONAL) {
+                                confirmedArchives[item.name]?.get(port.id)
+                            } else {
+                                null
+                            }
                         Text(
-                            text = "Archive — contains ${status.downloadedInnerEntry}",
+                            text = matchKindLabel(
+                                if (confirmedEntry != null) {
+                                    MatchKind.ARCHIVE_CONFIRMED
+                                } else {
+                                    kind
+                                },
+                                confirmedEntry
+                            ),
                             style = MaterialTheme.typography.bodySmall
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        OutlinedButton(
-                            onClick = { viewModel.extractMatchedArchive(port.id) }
-                        ) {
-                            Text("Extract ${status.downloadedInnerEntry} to Downloads/ONE")
+                    }
+                }
+                val progress = downloadProgress[item.id]
+                val alreadyDownloaded = status?.downloadedFileName == item.name
+                Spacer(modifier = Modifier.height(4.dp))
+                when {
+                    alreadyDownloaded -> {
+                        Text(
+                            text = "Downloaded — see Local below.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    progress != null -> {
+                        LinearProgressIndicator(
+                            progress = { progress },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            text = "Downloading… ${(progress * 100).toInt()}%",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    else -> {
+                        OutlinedButton(onClick = { viewModel.downloadItem(item) }) {
+                            Icon(Icons.Filled.Download, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Download to this device")
                         }
                     }
-                    MatchKind.ARCHIVE_PROVISIONAL -> {
-                        Text(
-                            text = "Archive — likely contains your file. " +
-                                "Download it to this device and refresh to confirm " +
-                                "what is inside.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                }
+            }
+            if (downloadError != null) {
+                Text(text = downloadError!!, color = MaterialTheme.colorScheme.error)
+                TextButton(onClick = { viewModel.dismissDownloadError() }) {
+                    Text("Dismiss")
+                }
+            }
+        }
+
+        // ---- Local: files already on this device ----
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(text = "Local", style = MaterialTheme.typography.titleSmall)
+        if (localFolderUnavailable) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Local folder unavailable — pick it again in Settings. " +
+                    "Files found there before are still listed below.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+        val detectedForPort = detectedFiles[port.id].orEmpty()
+        val hasLocal = status?.downloadedFileName != null ||
+            status?.assignedFile != null || detectedForPort.isNotEmpty()
+        if (!hasLocal) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "No file on this device yet — set a local folder in " +
+                    "Settings, or browse for a file.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        } else {
+            // Downloaded file in Downloads/ONE.
+            if (status?.downloadedFileName != null && status.assignedFile == null) {
+                Spacer(modifier = Modifier.height(8.dp))
+                LocalFileRow(
+                    name = status.downloadedFileName,
+                    where = "Downloads/ONE",
+                    label = matchKindLabel(
+                        status.downloadedMatchKind ?: MatchKind.DIRECT,
+                        status.downloadedInnerEntry
+                    )
+                )
+                if (status.downloadedMatchKind == MatchKind.ARCHIVE_CONFIRMED) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    OutlinedButton(
+                        onClick = { viewModel.extractMatchedArchive(port.id) }
+                    ) {
+                        Text("Extract ${status.downloadedInnerEntry} to Downloads/ONE")
                     }
-                    else -> {}
+                } else if (status.downloadedMatchKind == MatchKind.ARCHIVE_PROVISIONAL) {
+                    Text(
+                        text = "Archive — likely contains your file. " +
+                            "Refresh to confirm what is inside.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+            // Files found in the user's local game-files folder.
+            detectedForPort.forEach { detected ->
+                Spacer(modifier = Modifier.height(8.dp))
+                LocalFileRow(
+                    name = detected.name,
+                    where = "Found in your folder",
+                    label = matchKindLabel(detected.kind)
+                )
+                if (detected.kind != MatchKind.DIRECT) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    OutlinedButton(
+                        onClick = { viewModel.copyDetectedToDownloads(port.id, detected) }
+                    ) {
+                        Text("Copy to Downloads/ONE")
+                    }
+                }
+            }
+            // Picked file.
+            if (status?.assignedFile != null) {
+                Spacer(modifier = Modifier.height(8.dp))
+                LocalFileRow(
+                    name = status.assignedFile.name,
+                    where = "Picked file",
+                    label = "file"
+                )
+                TextButton(onClick = { viewModel.clearAssignment(port.id) }) {
+                    Text("Clear my file")
                 }
             }
             val extractMessage = extractMessages[port.id]
@@ -508,14 +746,17 @@ private fun GameDetailContent(
                     Text("Dismiss")
                 }
             }
-            if (status?.assignedFile != null) {
-                TextButton(onClick = { viewModel.clearAssignment(port.id) }) {
-                    Text("Clear my file")
+            val copyMessage = copyMessages[port.id]
+            if (copyMessage != null) {
+                Text(text = copyMessage, style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { viewModel.dismissCopyMessage(port.id) }) {
+                    Text("Dismiss")
                 }
             }
         }
+        Spacer(modifier = Modifier.height(8.dp))
         OutlinedButton(onClick = { pickFile.launch(arrayOf("*/*")) }) {
-            Text("Locate my file")
+            Text("Browse…")
         }
         val pickedMatches = pickedName?.let { PortMatcher.matchingPorts(it, viewModel.ports) }
             .orEmpty()
@@ -1029,11 +1270,23 @@ private fun SettingsScreen(viewModel: OneViewModel) {
     val account by viewModel.pmAccount.collectAsState()
     val statuses by viewModel.portStatuses.collectAsState()
     val assignedFiles by viewModel.assignedFiles.collectAsState()
+    val localFolder by viewModel.localFolder.collectAsState()
+    val localFolderUnavailable by viewModel.localFolderUnavailable.collectAsState()
     val customLinks by viewModel.customLinks.collectAsState()
     val customLinkError by viewModel.customLinkError.collectAsState()
     var message by remember { mutableStateOf<String?>(null) }
     var linkName by remember { mutableStateOf("") }
     var linkUrl by remember { mutableStateOf("") }
+
+    val pickFolder = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            val name = DocumentFile.fromTreeUri(context, uri)?.name
+                ?: uri.lastPathSegment ?: "Selected folder"
+            viewModel.setLocalFolder(uri, name)
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -1054,6 +1307,50 @@ private fun SettingsScreen(viewModel: OneViewModel) {
                 "in ONE's own Downloads folder.",
             style = MaterialTheme.typography.bodySmall
         )
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text(text = "Local game files folder", style = MaterialTheme.typography.titleMedium)
+        Text(
+            text = "Like a ROMs folder in an emulator: ONE pre-searches this " +
+                "folder for files matching your ports and remembers what it " +
+                "found, so the Library badges show up even before you open " +
+                "a game's page.",
+            style = MaterialTheme.typography.bodySmall
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        if (localFolderUnavailable) {
+            Text(
+                text = "Folder unavailable — pick it again. Files found there " +
+                    "before are still shown, marked stale.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+        if (localFolder != null) {
+            Text(
+                text = localFolder!!.displayName,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { pickFolder.launch(null) }) {
+                    Text("Change")
+                }
+                OutlinedButton(onClick = {
+                    viewModel.clearLocalFolder()
+                    message = "Local folder cleared. Picked files are untouched."
+                }) {
+                    Text("Clear")
+                }
+            }
+        } else {
+            OutlinedButton(onClick = { pickFolder.launch(null) }) {
+                Icon(Icons.Filled.Folder, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Choose folder")
+            }
+        }
         Spacer(modifier = Modifier.height(16.dp))
 
         Text(text = "Matched files", style = MaterialTheme.typography.titleMedium)
@@ -1097,6 +1394,11 @@ private fun SettingsScreen(viewModel: OneViewModel) {
             Spacer(modifier = Modifier.width(8.dp))
             Text("Clear matched files")
         }
+        Text(
+            text = "This clears picked files only — files found in your " +
+                "local folder stay detected.",
+            style = MaterialTheme.typography.bodySmall
+        )
         Spacer(modifier = Modifier.height(16.dp))
 
         Text(text = "Premiumize", style = MaterialTheme.typography.titleMedium)
@@ -1193,7 +1495,7 @@ private fun SettingsScreen(viewModel: OneViewModel) {
 
         Spacer(modifier = Modifier.height(24.dp))
         Text(text = "About", style = MaterialTheme.typography.titleMedium)
-        Text(text = "ONE 1.1.0 (debug build)", style = MaterialTheme.typography.bodyMedium)
+        Text(text = "ONE 1.2.0 (debug build)", style = MaterialTheme.typography.bodyMedium)
         Spacer(modifier = Modifier.height(8.dp))
         Text(
             text = viewModel.catalogNote,
