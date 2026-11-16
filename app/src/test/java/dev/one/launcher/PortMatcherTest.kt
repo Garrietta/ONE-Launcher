@@ -80,6 +80,164 @@ class PortMatcherTest {
         )
     }
 
+    // ---- False-positive matches (v1.3.1) ----
+
+    // Hints exactly as hintsFromGameTitle("Daytona USA", "daytona-usa")
+    // produces after the generic-token filter: "usa" is a region tag,
+    // never a hint by itself.
+    private val daytona = Port(
+        id = "daytona-usa",
+        title = "Daytona USA",
+        game = "Daytona USA",
+        system = "Sega Saturn",
+        type = "Recompilation",
+        repo = "example/daytona",
+        releasesUrl = "https://github.com/example/daytona/releases",
+        packageNames = listOf("com.example.daytona"),
+        fileExtensions = listOf(".cue", ".bin"),
+        fileNameHints = listOf("daytona", "daytona-usa"),
+        requiredDump = "Your own Daytona USA disc image."
+    )
+
+    private val alttpCatalog = Port(
+        id = "moonpearl",
+        title = "The Legend of Zelda: A Link to the Past",
+        game = "The Legend of Zelda: A Link to the Past",
+        system = "Super Nintendo",
+        type = "Recompilation",
+        repo = "example/moonpearl",
+        releasesUrl = "https://github.com/example/moonpearl/releases",
+        packageNames = emptyList(),
+        fileExtensions = listOf(".sfc", ".smc"),
+        fileNameHints = listOf("link", "past", "moonpearl"),
+        requiredDump = "Your own A Link to the Past ROM."
+    )
+
+    private val oraclesCatalog = Port(
+        id = "oracles",
+        title = "Oracles",
+        game = "The Legend of Zelda: Oracle of Ages",
+        system = "Game Boy Color",
+        type = "Recompilation",
+        repo = "example/oracles",
+        releasesUrl = "https://github.com/example/oracles/releases",
+        packageNames = emptyList(),
+        fileExtensions = listOf(".gbc"),
+        fileNameHints = listOf("oracle", "ages", "oracles"),
+        requiredDump = "Your own Oracle of Ages ROM."
+    )
+
+    @Test
+    fun ootZipMatchesSohOnlyNotDaytonaUsa() {
+        val ports = listOf(oot, daytona, alttpCatalog, oraclesCatalog)
+        val kinds = PortMatcher.matchKinds(
+            "Legend of Zelda, The - Ocarina of Time (USA).zip", ports
+        )
+        // v1.3.0 returned 9 matches here (Daytona via "usa", other Zelda
+        // ports via "legend"/"zelda", Project 2099 via "time", Phantasy
+        // Star IV via "end" inside "legend"). Only distinctive tokens
+        // count now.
+        assertEquals(1, kinds.size)
+        assertEquals("soh", kinds.single().port.id)
+        assertEquals(MatchKind.ARCHIVE_PROVISIONAL, kinds.single().kind)
+    }
+
+    @Test
+    fun usaSuffixedFileDoesNotMatchDaytonaUsa() {
+        assertNull(PortMatcher.matchKind("Some Random Game (USA).zip", daytona))
+        assertTrue(
+            PortMatcher.matchKinds("Some Random Game (USA).zip", listOf(daytona)).isEmpty()
+        )
+        // The file's own game still matches when its distinctive token is there.
+        assertEquals(
+            MatchKind.ARCHIVE_PROVISIONAL,
+            PortMatcher.matchKind("Daytona USA (USA).zip", daytona)
+        )
+    }
+
+    @Test
+    fun shortHintsNeverMatchAsWordPrefixes() {
+        val dayPort = Port(
+            id = "some-day-game",
+            title = "Some Day Game",
+            game = "Some Day Game",
+            system = "PC",
+            type = "Recompilation",
+            repo = "example/day",
+            releasesUrl = "",
+            packageNames = emptyList(),
+            fileExtensions = listOf(".bin"),
+            fileNameHints = listOf("day"),
+            requiredDump = "Your own files."
+        )
+        // "day" must not match inside "daytona".
+        assertNull(PortMatcher.matchKind("daytona.zip", dayPort))
+        // ...but it still matches as a whole word.
+        assertEquals(
+            MatchKind.ARCHIVE_PROVISIONAL,
+            PortMatcher.matchKind("some-day-game.zip", dayPort)
+        )
+        // "mm" (2 letters) must not match inside "mmo".
+        val twoShip = Port(
+            id = "2ship",
+            title = "2Ship2Harkinian",
+            game = "The Legend of Zelda: Majora's Mask",
+            system = "Nintendo 64",
+            type = "Decompilation",
+            repo = "linkzenic/2ship2harkinian-Android",
+            releasesUrl = "",
+            packageNames = listOf("com.dishii.mm"),
+            fileExtensions = listOf(".z64", ".n64"),
+            fileNameHints = listOf("mm", "majora"),
+            requiredDump = "Your own Majora's Mask ROM."
+        )
+        assertFalse(PortMatcher.matches("mmo-game.z64", twoShip))
+        assertTrue(PortMatcher.matches("mm.z64", twoShip))
+    }
+
+    @Test
+    fun longHintsMayMatchAsWordPrefixes() {
+        val starship = Port(
+            id = "starship",
+            title = "Starship",
+            game = "Star Fox 64",
+            system = "Nintendo 64",
+            type = "Decompilation",
+            repo = "izzy2lost/Starship",
+            releasesUrl = "",
+            packageNames = emptyList(),
+            fileExtensions = listOf(".z64"),
+            fileNameHints = listOf("starfox", "star fox", "sf64"),
+            requiredDump = "Your own Star Fox 64 ROM."
+        )
+        assertTrue(PortMatcher.matches("starfox64.z64", starship))
+        assertTrue(PortMatcher.matches("Star Fox 64.z64", starship))
+    }
+
+    @Test
+    fun substringHintsDoNotMatchInsideOtherWords() {
+        val phantasyStar = Port(
+            id = "phantasy-star-iv",
+            title = "Phantasy Star IV: The End of the Millenium",
+            game = "Phantasy Star IV: The End of the Millenium",
+            system = "Mega Drive",
+            type = "Recompilation",
+            repo = "example/ps4",
+            releasesUrl = "",
+            packageNames = emptyList(),
+            fileExtensions = listOf(".bin", ".md"),
+            fileNameHints = listOf("phantasy", "star", "end", "millenium"),
+            requiredDump = "Your own Phantasy Star IV ROM."
+        )
+        // "end" must not match inside "legend", and "star" (4 letters)
+        // is not a prefix match either.
+        assertNull(
+            PortMatcher.matchKind(
+                "Legend of Zelda, The - Ocarina of Time (USA).zip", phantasyStar
+            )
+        )
+    }
+
     @Test
     fun sevenZipAndRarAreProvisionalOnly() {
         assertEquals(

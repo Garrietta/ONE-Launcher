@@ -1,5 +1,33 @@
 # Changelog
 
+## v1.3.1 — 2026-11-16
+
+Device feedback on v1.3.0 (folded Fold 8): the Library filter ate half the
+screen, Cloud cards rendered ~2x taller than their content, and the OoT
+zip false-matched Daytona USA.
+
+- Compact platform filter: the ~29 platform chips are one horizontally
+  scrolling row (~48dp) instead of a wrapping FlowRow of ~6 rows. Same
+  filter, same selection — the folded Library now shows ~3 port cards
+  below the header instead of one.
+- Cloud card layout: the match chips are a FlowRow instead of a plain
+  Row. A plain Row gives every chip past the first the leftover width
+  (often ~0), so a long chip label wraps to one word per line and the row
+  measures many lines tall — the card ballooned with a big empty gray
+  region below the visible chips and the Download button pushed out of
+  sight. Chips now wrap onto real lines inside the card.
+- False-positive matches fixed (two layers). Catalog hints no longer
+  include region/format tags ("usa", "pal", "ntsc", …) or
+  franchise-generic words ("zelda", "legend", "time", "end", …) — a match
+  needs the game's distinctive tokens. And hints now match against whole
+  words of the file name, not substrings: "end" can no longer match
+  inside "legend", "day" inside "daytona". Long hints (5+ letters) may
+  still be a word prefix ("starfox" in "starfox64"). The OoT zip now
+  matches only Ship of Harkinian (was 9 ports, including Daytona USA).
+  Franchise words shared by a whole series ("mario", "final", "fantasy")
+  still match across that series — an ambiguous name matches more than
+  one port by design and the detail screen lets the user assign it.
+
 ## v1.3.0 — 2026-11-16
 
 The Library now lists the full Recompa catalog (500+ ports) instead of

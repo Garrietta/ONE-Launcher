@@ -136,15 +136,34 @@ private val HINT_STOPWORDS = setOf(
 )
 
 /**
+ * Tokens that must never become a filename hint by themselves. Region and
+ * format tags appear in almost every file name ("(USA)"), and
+ * franchise-generic words are shared by a whole series — a port titled
+ * "Daytona USA" must not match every "(USA)" file, and an Ocarina of
+ * Time file must not match every Zelda port. A match needs the game's
+ * distinctive tokens ("ocarina", "daytona"). Every port keeps its catalog
+ * id as a hint, so a port whose title is all generic words still matches
+ * its own files by id.
+ */
+private val HINT_GENERIC_TOKENS = setOf(
+    // Region / format tags.
+    "usa", "us", "eur", "eu", "uk", "jp", "jpn", "pal", "ntsc", "world",
+    "kor", "aus", "can", "bra", "ger", "fra", "spa", "ita", "rus", "chi", "chn",
+    // Franchise-generic words and generic descriptors.
+    "legend", "zelda", "time", "end", "dual", "screen", "super", "bros", "game"
+)
+
+/**
  * Filename hints derived from a game title: lowercase word tokens of
- * length 3+, minus stopwords, plus the catalog id itself. These are
- * hints only — a file still needs a matching extension (or an archive
- * name hit) to match.
+ * length 3+, minus stopwords and generic tokens (region tags and
+ * franchise-generic words — see [HINT_GENERIC_TOKENS]), plus the catalog
+ * id itself. These are hints only — a file still needs a matching
+ * extension (or an archive name hit) to match.
  */
 fun hintsFromGameTitle(game: String, catalogId: String): List<String> {
     val words = game.lowercase()
         .split(Regex("[^a-z0-9]+"))
-        .filter { it.length >= 3 && it !in HINT_STOPWORDS }
+        .filter { it.length >= 3 && it !in HINT_STOPWORDS && it !in HINT_GENERIC_TOKENS }
     return (words + catalogId.lowercase()).distinct()
 }
 

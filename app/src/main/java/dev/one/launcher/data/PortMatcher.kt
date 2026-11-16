@@ -31,10 +31,12 @@ data class PortMatch(
  *
  * A file matches directly when its extension is one the port accepts AND
  * its name contains one of the port's filename hints (or matches the
- * port's regex when one is present). Hints are deliberately short, so an
- * ambiguous name can match more than one port — the detail screen lets
- * the user assign it to the right port. This never deletes or moves user
- * files.
+ * port's regex when one is present). Hints are matched against whole
+ * words of the file name — never as substrings — so "end" cannot match
+ * inside "legend" and "day" cannot match inside "daytona". Hints are
+ * deliberately short, so an ambiguous name can match more than one port
+ * — the detail screen lets the user assign it to the right port. This
+ * never deletes or moves user files.
  *
  * Archives (.zip, .7z, .rar) are matched on name only: an archive matches
  * a port when its base name (minus the extension) contains one of the
@@ -50,6 +52,34 @@ object PortMatcher {
         return ARCHIVE_EXTENSIONS.any { lower.endsWith(it) }
     }
 
+    /** Lowercase word tokens of a file name, split on non-alphanumerics. */
+    private fun fileNameWords(fileName: String): List<String> =
+        fileName.lowercase().split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
+
+    /**
+     * A hint matches when its words appear in the file name: a single-word
+     * hint must be a whole word, except hints of 5+ letters which may also
+     * be a word prefix ("starfox" in "starfox64", "majora" in
+     * "majorasmask", "ocarina" in "ocarinaoftime"); a multi-word hint must
+     * appear as a contiguous phrase ("star fox", "link to the past").
+     * Short hints are never prefixes — "day" must not match "daytona",
+     * "mm" must not match "mmo".
+     */
+    private fun hintMatchesFileName(hint: String, words: List<String>): Boolean {
+        val hintWords = hint.lowercase()
+            .split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
+        if (hintWords.isEmpty()) return false
+        if (hintWords.size == 1) {
+            val word = hintWords[0]
+            return if (word.length >= 5) {
+                words.any { it == word || it.startsWith(word) }
+            } else {
+                words.any { it == word }
+            }
+        }
+        return words.windowed(hintWords.size).any { it == hintWords }
+    }
+
     fun matches(fileName: String, port: Port): Boolean {
         // No file info (e.g. a catalog port whose assets[] is missing):
         // matching is disabled rather than guessed.
@@ -58,7 +88,8 @@ object PortMatcher {
         val extensionOk = port.fileExtensions.any { lower.endsWith(it.lowercase()) }
         if (!extensionOk) return false
         if (port.fileNameHints.isEmpty() && port.fileNameRegex == null) return true
-        if (port.fileNameHints.any { hint -> lower.contains(hint.lowercase()) }) return true
+        val words = fileNameWords(fileName)
+        if (port.fileNameHints.any { hint -> hintMatchesFileName(hint, words) }) return true
         val regex = port.fileNameRegex
         if (regex != null) {
             return try {
@@ -89,9 +120,9 @@ object PortMatcher {
     }
 
     private fun nameHitsHints(name: String, port: Port): Boolean {
-        val lower = name.lowercase()
         if (port.fileNameHints.isEmpty() && port.fileNameRegex == null) return true
-        if (port.fileNameHints.any { hint -> lower.contains(hint.lowercase()) }) return true
+        val words = fileNameWords(name)
+        if (port.fileNameHints.any { hint -> hintMatchesFileName(hint, words) }) return true
         val regex = port.fileNameRegex
         if (regex != null) {
             return try {

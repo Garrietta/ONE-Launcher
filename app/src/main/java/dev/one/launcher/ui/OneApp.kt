@@ -9,6 +9,7 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -400,8 +401,12 @@ private fun PortList(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
         )
         if (platformOptions.isNotEmpty()) {
-            FlowRow(
+            // One horizontally scrolling row, not a wrapping grid: on the
+            // folded screen the old FlowRow ran to ~6 rows and left room
+            // for about one port card below it.
+            Row(
                 modifier = Modifier.fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -1337,6 +1342,7 @@ private fun CloudScreen(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CloudItemRow(
     item: PremiumizeItem,
@@ -1385,7 +1391,16 @@ private fun CloudItemRow(
                 val matches = PortMatcher.matchKinds(item.name, ports)
                 if (matches.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(4.dp))
-                    Row {
+                    // FlowRow, not a plain Row: a Row gives each chip past
+                    // the first the leftover width (often ~0), so a long
+                    // chip label wraps to one word per line and the row
+                    // measures many lines tall — the card balloons to ~2x
+                    // its content with a big empty region below the
+                    // visible chips. Chips wrap onto real lines here.
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
                         matches.forEach { match ->
                             val label = when (match.kind) {
                                 MatchKind.DIRECT -> "Matches ${match.port.title}"
@@ -1408,7 +1423,6 @@ private fun CloudItemRow(
                                 onClick = { onOpenDetail(match.port.id) },
                                 label = { Text(label) }
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
                         }
                     }
                 }

@@ -271,11 +271,25 @@ class RecompaCatalogTest {
     @Test
     fun hintsComeFromGameTitleTokens() {
         val hints = hintsFromGameTitle("The Legend of Zelda: Ocarina of Time", "soh")
-        assertTrue(hints.contains("zelda"))
         assertTrue(hints.contains("ocarina"))
         assertTrue(hints.contains("soh"))
         assertFalse(hints.contains("the"))
         assertFalse(hints.contains("of"))
+        // Franchise-generic words are not hints: an Ocarina of Time file
+        // must not match every Zelda port.
+        assertFalse(hints.contains("zelda"))
+        assertFalse(hints.contains("legend"))
+        assertFalse(hints.contains("time"))
+    }
+
+    @Test
+    fun regionTokensNeverBecomeHints() {
+        val hints = hintsFromGameTitle("Daytona USA", "daytona-usa")
+        assertTrue(hints.contains("daytona"))
+        assertTrue(hints.contains("daytona-usa"))
+        assertFalse(hints.contains("usa"))
+        val generic = hintsFromGameTitle("Some Random Game", "some-game")
+        assertFalse(generic.contains("game"))
     }
 
     @Test
