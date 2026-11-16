@@ -490,21 +490,30 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
         // "Games with matches" filter state: the game keys with at
         // least one matching file. Recomputed on a background thread
         // whenever the games or any file source changes, so the filter
-        // is always in sync without blocking the UI. The transform's
-        // parameter types are explicit: without them the compiler
-        // resolves this to the vararg combine overload (whose transform
-        // takes a single Array) and cannot infer the parameters.
+        // is always in sync without blocking the UI. Seven flows is
+        // past the typed combine overloads (they stop at five in
+        // kotlinx-coroutines 1.8), so this is the vararg form: one
+        // Array, in argument order. The casts are safe — the order is
+        // fixed here.
         viewModelScope.launch {
             combine(
                 _games, _cloudAllFiles, _cloudFallback, _serverListings,
                 _detectedLocalFiles, _portStatuses, _remoteFolders
-            ) { games: List<GameEntry>,
-                cloudFiles: List<PremiumizeItem>,
-                cloudFallback: Map<String, List<PremiumizeItem>>,
-                serverListings: Map<String, List<RemoteEntry>>,
-                detected: Map<String, List<DetectedFile>>,
-                statuses: Map<String, PortStatus>,
-                remoteFolders: List<RemoteFolderSource> ->
+            ) { values ->
+                @Suppress("UNCHECKED_CAST")
+                val games = values[0] as List<GameEntry>
+                @Suppress("UNCHECKED_CAST")
+                val cloudFiles = values[1] as List<PremiumizeItem>
+                @Suppress("UNCHECKED_CAST")
+                val cloudFallback = values[2] as Map<String, List<PremiumizeItem>>
+                @Suppress("UNCHECKED_CAST")
+                val serverListings = values[3] as Map<String, List<RemoteEntry>>
+                @Suppress("UNCHECKED_CAST")
+                val detected = values[4] as Map<String, List<DetectedFile>>
+                @Suppress("UNCHECKED_CAST")
+                val statuses = values[5] as Map<String, PortStatus>
+                @Suppress("UNCHECKED_CAST")
+                val remoteFolders = values[6] as List<RemoteFolderSource>
                 val serverSources =
                     remoteFolders.map { it.name to serverListings[it.id].orEmpty() }
                 val localStates = games.flatMap { it.ports }.associate { port ->
