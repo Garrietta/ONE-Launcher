@@ -101,6 +101,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -147,10 +148,14 @@ import dev.one.launcher.data.matchServerFilesForGame
 import dev.one.launcher.data.mergeLiveAndCachedFiles
 import dev.one.launcher.data.mergeLiveAndCachedMagnets
 import dev.one.launcher.data.parseHiddenExtensions
+import dev.one.launcher.data.posterSourceLabel
+import dev.one.launcher.data.posterStatusText
 import dev.one.launcher.data.rankPortsByStars
 import dev.one.launcher.data.shouldShowRemoteEntry
 import dev.one.launcher.data.unfoldedGridColumns
 import dev.one.launcher.model.Port
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -421,6 +426,7 @@ private fun LibraryScreen(
     val gamesWithFiles by viewModel.gamesWithFilesFlow.collectAsState()
     val catalogState by viewModel.catalogState.collectAsState()
     val pairingCache by viewModel.pairingCache.collectAsState()
+    val magnetPairings by viewModel.magnetPairings.collectAsState()
 
     // Search + platform filter (v1.8.2): the filter state lives in the
     // ViewModel, not in a composable's `remember` — so navigating into
@@ -474,6 +480,8 @@ private fun LibraryScreen(
             viewModel = viewModel,
             games = filteredGames,
             statuses = statuses,
+            pairingCache = pairingCache,
+            magnetPairings = magnetPairings,
             selectedGame = selectedGame,
             onSelectGame = onSelectGame,
             onOpenDetail = onOpenDetail,
@@ -493,6 +501,7 @@ private fun LibraryScreen(
             games = filteredGames,
             statuses = statuses,
             pairingCache = pairingCache,
+            magnetPairings = magnetPairings,
             onOpenGame = onOpenGame,
             modifier = Modifier.fillMaxSize(),
             onRefresh = { viewModel.refreshCatalog() },
@@ -514,6 +523,7 @@ private fun GameList(
     games: List<GameEntry>,
     statuses: Map<String, PortStatus>,
     pairingCache: Map<String, List<GameFile>>,
+    magnetPairings: Map<String, List<GameMagnetLink>>,
     onOpenGame: (String) -> Unit,
     modifier: Modifier,
     onRefresh: () -> Unit,
@@ -577,16 +587,20 @@ private fun GameList(
                 ) {
                     items(games, key = { it.key }) { game ->
                         val anyInstalled = game.ports.any { statuses[it.id]?.isInstalled == true }
+                        // The poster tag (v1.8.6): a matched magnet
+                        // counts like a matched file — a magnet-only
+                        // game ('Splosion Man's Triple Pack magnet)
+                        // shows "Magnet matched" with the tag
+                        // "json · Magnet". "Has files" is untouched
+                        // (magnets still don't count there); this is
+                        // the poster's local display only.
+                        val matchedFiles = pairingCache[game.key].orEmpty()
+                        val matchedMagnets = magnetPairings[game.key].orEmpty()
                         val anyFile = game.ports.any { statuses[it.id]?.hasFile == true } ||
-                            pairingCache.containsKey(game.key)
-                        val statusText = when {
-                            anyInstalled && anyFile -> "Ready to play"
-                            anyInstalled -> "Installed"
-                            anyFile -> "File matched"
-                            else -> "Not installed"
-                        }
-                        val sourceLabel = pairingCache[game.key]?.firstOrNull()
-                            ?.let { fileSourceLabel(it) }
+                            matchedFiles.isNotEmpty()
+                        val anyMagnet = matchedMagnets.isNotEmpty()
+                        val statusText = posterStatusText(anyInstalled, anyFile, anyMagnet)
+                        val sourceLabel = posterSourceLabel(matchedFiles, matchedMagnets)
                         GameSpine(
                             game = game,
                             isInstalled = anyInstalled,
@@ -718,6 +732,8 @@ private fun UnfoldedLibrary(
     viewModel: OneViewModel,
     games: List<GameEntry>,
     statuses: Map<String, PortStatus>,
+    pairingCache: Map<String, List<GameFile>>,
+    magnetPairings: Map<String, List<GameMagnetLink>>,
     selectedGame: GameEntry?,
     onSelectGame: (String) -> Unit,
     onOpenDetail: (String) -> Unit,
@@ -777,10 +793,25 @@ private fun UnfoldedLibrary(
             ) {
                 items(games, key = { it.key }) { game ->
                     val anyInstalled = game.ports.any { statuses[it.id]?.isInstalled == true }
+                    // The poster tags (v1.8.6): the unfolded grid
+                    // posters carry the same status + source tag as
+                    // the folded shelf — they were missing here.
+                    // A matched magnet counts like a matched file
+                    // for the tag (see GameList): a magnet-only game
+                    // reads "Magnet matched" with "json · Magnet".
+                    val matchedFiles = pairingCache[game.key].orEmpty()
+                    val matchedMagnets = magnetPairings[game.key].orEmpty()
+                    val anyFile = game.ports.any { statuses[it.id]?.hasFile == true } ||
+                        matchedFiles.isNotEmpty()
+                    val anyMagnet = matchedMagnets.isNotEmpty()
+                    val statusText = posterStatusText(anyInstalled, anyFile, anyMagnet)
+                    val sourceLabel = posterSourceLabel(matchedFiles, matchedMagnets)
                     GameGridCard(
                         game = game,
                         selected = game.key == selectedGame?.key,
                         isInstalled = anyInstalled,
+                        statusText = statusText,
+                        sourceLabel = sourceLabel,
                         onClick = {
                             detailOpen = true
                             onSelectGame(game.key)
@@ -838,12 +869,17 @@ private fun UnfoldedLibrary(
  * Mirrors [GameSpine] (the folded shelf), but fluid-width instead of
  * a fixed 112dp. The selected card carries a lime outline; a game
  * with any port installed carries a small lime play mark on the cover.
+ * The status ("Not installed", "File matched", ...) and the file
+ * source tag (Premiumize / the remote folder's name / Local) ride on
+ * the art, like the shelf (v1.8.6 — they were missing here).
  */
 @Composable
 private fun GameGridCard(
     game: GameEntry,
     selected: Boolean,
     isInstalled: Boolean,
+    statusText: String,
+    sourceLabel: String?,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -899,6 +935,42 @@ private fun GameGridCard(
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(16.dp)
                         )
+                    }
+                }
+                // Status + source, stacked at the bottom of the art
+                // (v1.8.6) — the same tags as the folded shelf.
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.6f),
+                        shape = MaterialTheme.shapes.small
+                    ) {
+                        Text(
+                            text = statusText,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                        )
+                    }
+                    if (sourceLabel != null) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer
+                                .copy(alpha = 0.9f),
+                            shape = MaterialTheme.shapes.small
+                        ) {
+                            Text(
+                                text = sourceLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.padding(
+                                    horizontal = 6.dp,
+                                    vertical = 3.dp
+                                )
+                            )
+                        }
                     }
                 }
             }
@@ -1825,17 +1897,40 @@ private fun GamePageContent(
 
     // Your files, aggregated from all three owned sources and deduped
     // by file name (on-device first, then cloud, then server).
-    val cloudMatches = remember(cloudAllFiles, cloudFallback, game) {
-        val items = if (cloudAllFiles.isNotEmpty()) {
-            cloudAllFiles
-        } else {
-            game.ports.flatMap { cloudFallback[it.id].orEmpty() }
+    //
+    // The live matches are computed OFF the main thread (v1.8.6):
+    // the page used to run matchServerFilesForGame +
+    // matchMagnetLinksForGame in `remember` during composition — over
+    // the full 26k-entry feed, on Main, on every server-listings
+    // change. Measured on JVM: the magnet match alone is 379–837ms
+    // per run (every magnet goes through the NAME_ONLY similarity
+    // path), so a game page blocked the main thread for ~1–4s per
+    // run on device, 2–3 runs per open (disk cache load, then fresh
+    // fetch) — Garrett's ~10s page load. The page now shows the
+    // pairing cache immediately (below) and the live match fills in
+    // from the background when it lands; the stars fetch and cover
+    // art were already async and never blocked the page.
+    val liveCloudMatches by produceState(
+        initialValue = emptyList<GameFile>(),
+        cloudAllFiles, cloudFallback, game
+    ) {
+        value = withContext(Dispatchers.Default) {
+            val items = if (cloudAllFiles.isNotEmpty()) {
+                cloudAllFiles
+            } else {
+                game.ports.flatMap { cloudFallback[it.id].orEmpty() }
+            }
+            matchCloudFilesForGame(items, game.ports)
         }
-        matchCloudFilesForGame(items, game.ports)
     }
-    val serverMatches = remember(remoteFolders, serverListings, game) {
-        val sources = remoteFolders.map { it.name to serverListings[it.id].orEmpty() }
-        matchServerFilesForGame(sources, game.ports)
+    val liveServerMatches by produceState(
+        initialValue = emptyList<GameFile>(),
+        remoteFolders, serverListings, game
+    ) {
+        value = withContext(Dispatchers.Default) {
+            val sources = remoteFolders.map { it.name to serverListings[it.id].orEmpty() }
+            matchServerFilesForGame(sources, game.ports)
+        }
     }
     val localMatches = remember(detectedFiles, statuses, game) {
         val states = game.ports.associate { port ->
@@ -1852,11 +1947,13 @@ private fun GamePageContent(
     // Cached files for this game (v1.8.2): the pairing cache
     // pre-populates the page before the live sources finish loading.
     // Live files win on a name clash — the cached copy only fills a
-    // gap the live match has not produced yet.
+    // gap the live match has not produced yet. While the live match
+    // is still computing in the background, the live lists are empty
+    // and the page is exactly the cached list, so it shows instantly.
     val cachedForGame = pairingCache[game.key].orEmpty()
-    val gameFiles = remember(cloudMatches, serverMatches, localMatches, cachedForGame) {
+    val gameFiles = remember(liveCloudMatches, liveServerMatches, localMatches, cachedForGame) {
         mergeLiveAndCachedFiles(
-            localMatches + cloudMatches + serverMatches, cachedForGame
+            localMatches + liveCloudMatches + liveServerMatches, cachedForGame
         )
     }
 
@@ -1865,14 +1962,21 @@ private fun GamePageContent(
     // file, so it is shown in its own section below, never in "Your
     // files". Cached magnets pre-populate the section the same way
     // cached files pre-populate "Your files": the live match wins on
-    // a magnet-URI clash, the cached copy only fills a gap.
-    val serverMagnetMatches = remember(remoteFolders, serverListings, game) {
-        val sources = remoteFolders.map { it.name to serverListings[it.id].orEmpty() }
-        matchMagnetLinksForGame(sources, game.ports)
+    // a magnet-URI clash, the cached copy only fills a gap. The live
+    // magnet match is computed off Main like the file match above
+    // (v1.8.6) — it is the expensive half of the page's matching.
+    val liveServerMagnets by produceState(
+        initialValue = emptyList<GameMagnetLink>(),
+        remoteFolders, serverListings, game
+    ) {
+        value = withContext(Dispatchers.Default) {
+            val sources = remoteFolders.map { it.name to serverListings[it.id].orEmpty() }
+            matchMagnetLinksForGame(sources, game.ports)
+        }
     }
     val cachedMagnetsForGame = magnetPairings[game.key].orEmpty()
-    val gameMagnets = remember(serverMagnetMatches, cachedMagnetsForGame) {
-        mergeLiveAndCachedMagnets(serverMagnetMatches, cachedMagnetsForGame)
+    val gameMagnets = remember(liveServerMagnets, cachedMagnetsForGame) {
+        mergeLiveAndCachedMagnets(liveServerMagnets, cachedMagnetsForGame)
     }
 
     // Fetch this game's star counts and make sure its cloud and server

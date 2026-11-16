@@ -30,10 +30,13 @@ import dev.one.launcher.data.matchMagnetLinksForGame
 import dev.one.launcher.data.matchServerFilesForGame
 import dev.one.launcher.data.mergeLiveAndCachedFiles
 import dev.one.launcher.data.mergeLiveAndCachedMagnets
+import dev.one.launcher.data.magnetSourceLabel
 import dev.one.launcher.data.normalizeForTokens
 import dev.one.launcher.data.pairGamesWithFiles
 import dev.one.launcher.data.pairGamesWithMagnets
 import dev.one.launcher.data.pairingMapsFingerprint
+import dev.one.launcher.data.posterSourceLabel
+import dev.one.launcher.data.posterStatusText
 import dev.one.launcher.data.rankPortsByStars
 import dev.one.launcher.data.toCached
 import dev.one.launcher.data.toGameFile
@@ -1392,6 +1395,155 @@ class GameLibraryTest {
         )
         assertEquals(live, mergeLiveAndCachedMagnets(live, cached))
         assertTrue(mergeLiveAndCachedMagnets(emptyList(), emptyList()).isEmpty())
+    }
+
+    // ---- Game page shows cached content instantly (v1.8.6) ----
+    //
+    // The page used to run the live match (matchServerFilesForGame +
+    // matchMagnetLinksForGame over the full 26k-entry feed) in `remember`
+    // during composition, on the main thread — measured 379–837ms for
+    // the magnet match alone on JVM, ~1–4s on device, 2–3 runs per
+    // open. The live match now runs in the background (produceState on
+    // Dispatchers.Default) and the page is exactly the cached pairing
+    // while it computes. The contract, at the merge level: with empty
+    // live lists (sources not loaded, background match not done), the
+    // page state is exactly the cached files and magnets — it never
+    // waits on live data to show what it already knows.
+
+    @Test
+    fun gamePageShowsCachedFilesAndMagnetsWithNoLiveData() {
+        val cachedFiles = listOf(
+            GameFile(
+                name = "Splosion Man (USA).zip",
+                kind = MatchKind.ARCHIVE_PROVISIONAL,
+                source = GameFileSource.SERVER,
+                portId = "splosion-man",
+                where = "json",
+                remoteSourceName = "json",
+                remoteUrl = "https://example.com/splosion-man.zip"
+            )
+        )
+        val cachedMagnets = listOf(
+            GameMagnetLink(
+                name = "Triple Pack - Trials HD & Limbo & 'Splosion Man (USA, Europe).zip",
+                magnetUrl = "magnet:?xt=urn:btih:bbbb",
+                kind = MatchKind.NAME_ONLY,
+                portId = "splosionmanrecomp",
+                where = "json"
+            )
+        )
+        assertEquals(cachedFiles, mergeLiveAndCachedFiles(emptyList(), cachedFiles))
+        assertEquals(cachedMagnets, mergeLiveAndCachedMagnets(emptyList(), cachedMagnets))
+    }
+
+    // ---- Poster tags (v1.8.6) ----
+    //
+    // A matched magnet counts toward the poster tag: the tag appears
+    // when a game has a matched downloadable file OR a matched magnet
+    // link, showing the magnet's source ("json") like a file's. The
+    // "Has files" filter is unchanged — magnets still don't count
+    // there; only the poster's display changes.
+
+    private fun serverFile(name: String, where: String) = GameFile(
+        name = name,
+        kind = MatchKind.NAME_ONLY,
+        source = GameFileSource.SERVER,
+        portId = "some-port",
+        where = where,
+        remoteSourceName = where,
+        remoteUrl = "https://example.com/$name"
+    )
+
+    private fun magnetLink(name: String, where: String, remoteSourceName: String? = null) =
+        GameMagnetLink(
+            name = name,
+            magnetUrl = "magnet:?xt=urn:btih:cccc",
+            kind = MatchKind.NAME_ONLY,
+            portId = "some-port",
+            where = where,
+            remoteSourceName = remoteSourceName
+        )
+
+    @Test
+    fun posterSourceLabelPrefersFileOverMagnet() {
+        assertEquals(
+            "Premiumize",
+            posterSourceLabel(
+                listOf(
+                    GameFile(
+                        name = "Game (USA).zip",
+                        kind = MatchKind.DIRECT,
+                        source = GameFileSource.CLOUD,
+                        portId = "some-port",
+                        where = "Premiumize"
+                    )
+                ),
+                listOf(magnetLink("Game (USA).zip", "json"))
+            )
+        )
+        assertEquals("json", posterSourceLabel(listOf(serverFile("Game (USA).zip", "json")), emptyList()))
+        assertEquals("Local", posterSourceLabel(
+            listOf(
+                GameFile(
+                    name = "Game (USA).zip",
+                    kind = MatchKind.DIRECT,
+                    source = GameFileSource.LOCAL,
+                    portId = "some-port",
+                    where = "Found in your folder"
+                )
+            ),
+            emptyList()
+        ))
+    }
+
+    @Test
+    fun posterSourceLabelShowsMagnetSourceWhenNoFile() {
+        // 'Splosion Man (Garrett, 2026-11-16): its only link is the
+        // Triple Pack magnet, so its poster shows the magnet's source
+        // with a "· Magnet" suffix — a magnet is a copyable link,
+        // not a file, so the tag says so.
+        assertEquals(
+            "json · Magnet",
+            posterSourceLabel(
+                emptyList(),
+                listOf(
+                    magnetLink(
+                        "Triple Pack - Trials HD & Limbo & 'Splosion Man (USA, Europe).zip",
+                        "json"
+                    )
+                )
+            )
+        )
+    }
+
+    @Test
+    fun posterSourceLabelIsNullWhenNothing() {
+        assertNull(posterSourceLabel(emptyList(), emptyList()))
+    }
+
+    @Test
+    fun posterStatusTextMagnetOnlyReadsMagnetMatched() {
+        // A magnet-only game does not read "File matched" — a magnet
+        // is not a file.
+        assertEquals("Magnet matched", posterStatusText(false, false, true))
+        assertEquals("File matched", posterStatusText(false, true, true))
+        assertEquals("File matched", posterStatusText(false, true, false))
+        assertEquals("Ready to play", posterStatusText(true, true, false))
+        assertEquals("Installed", posterStatusText(true, false, false))
+        assertEquals("Installed", posterStatusText(true, false, true))
+        assertEquals("Not installed", posterStatusText(false, false, false))
+    }
+
+    @Test
+    fun magnetSourceLabelUsesRemoteSourceName() {
+        assertEquals(
+            "json",
+            magnetSourceLabel(magnetLink("Game (USA).zip", "json", remoteSourceName = "json"))
+        )
+        assertEquals(
+            "My Server",
+            magnetSourceLabel(magnetLink("Game (USA).zip", "My Server"))
+        )
     }
 
     // ---- Magnet links on the game page (v1.8.3) ----

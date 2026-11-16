@@ -590,6 +590,55 @@ fun fileSourceLabel(file: GameFile): String = when (file.source) {
         file.remoteSourceName?.takeIf { it.isNotBlank() } ?: file.where
 }
 
+/**
+ * The clear source label for a magnet link (v1.8.6): the remote
+ * folder's configured name (e.g. "json"). Magnets only ever come
+ * from a remote folder, so there is no Local/Premiumize case — the
+ * folder name is the source, mirroring [fileSourceLabel] for server
+ * files.
+ */
+fun magnetSourceLabel(magnet: GameMagnetLink): String =
+    magnet.remoteSourceName?.takeIf { it.isNotBlank() } ?: magnet.where
+
+/**
+ * The poster tag for a game (v1.8.6): the source of its first
+ * matched downloadable file, else the source of its first matched
+ * magnet link with a "· Magnet" suffix — a magnet is a copyable
+ * link, not a file, so the tag says so ("json · Magnet"). A game
+ * whose only link is a magnet — 'Splosion Man's Triple Pack
+ * magnet — still shows a tag. Null when the game has neither a
+ * file nor a magnet. Pure — unit-tested. This is display only: it
+ * never feeds "Has files" (magnets still don't count there), and
+ * it never changes any matching.
+ */
+fun posterSourceLabel(
+    files: List<GameFile>,
+    magnets: List<GameMagnetLink>
+): String? {
+    files.firstOrNull()?.let { return fileSourceLabel(it) }
+    magnets.firstOrNull()?.let { return "${magnetSourceLabel(it)} · Magnet" }
+    return null
+}
+
+/**
+ * The poster status for a game (v1.8.6): the same "Ready to play" /
+ * "Installed" / "File matched" / "Not installed" as the shelf, plus
+ * "Magnet matched" for a game whose only link is a magnet — a
+ * magnet is not a file, so it does not read "File matched". Pure —
+ * unit-tested. Display only; "Has files" is unaffected.
+ */
+fun posterStatusText(
+    anyInstalled: Boolean,
+    anyFile: Boolean,
+    anyMagnet: Boolean
+): String = when {
+    anyInstalled && anyFile -> "Ready to play"
+    anyInstalled -> "Installed"
+    anyFile -> "File matched"
+    anyMagnet -> "Magnet matched"
+    else -> "Not installed"
+}
+
 // ---- Full pairing computation (v1.8.2) ----
 
 /**

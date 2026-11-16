@@ -1,5 +1,43 @@
 # Changelog
 
+## v1.8.6 — 2026-11-16
+
+Game pages load instantly, poster tags on the unfolded layout, and
+magnets count for the poster tag. Three reports from Garrett's
+v1.8.5 video, all in one round.
+
+**Game pages still took ~10 seconds.** v1.8.5 made cold start faster,
+but a game page still took ~10 seconds to show its files and magnets
+("'Splosion Man loaded quicker, but not instant... it should almost
+be just instantaneous"). Measured: the page ran
+`matchServerFilesForGame` + `matchMagnetLinksForGame` in `remember`
+during composition, on the main thread, over the full 26k-entry
+feed — the magnet match alone is 379–837ms per run on JVM (every
+magnet goes through the NAME_ONLY similarity path), ~1–4s on device,
+and it re-ran on every server-listings change (disk cache load, then
+fresh fetch). The live match now runs in the background
+(`produceState` on `Dispatchers.Default`) and the page shows the
+pairing cache immediately — cached files and magnets appear on open
+with no waiting on live data, recomputation, or the stars fetch
+(which was already async and never blocked the page). The live match
+fills in when it lands; the merge rule is unchanged (live wins on a
+name clash, cached fills gaps).
+
+**Poster tags missing on the unfolded layout.** The file-matched /
+source tag showed on the folded shelf posters but not on the
+unfolded grid posters. The grid cards now carry the same status +
+source tag, stacked at the bottom of the art like the shelf.
+
+**A game with a magnet should show the poster tag.** 'Splosion
+Man's only link is the Triple Pack magnet, so its poster showed no
+tag. A matched magnet now counts toward the poster tag: the tag
+appears when a game has a matched downloadable file OR a matched
+magnet link. A magnet-only game reads "Magnet matched" (a magnet
+is a copyable link, not a file, so it does not read "File
+matched") and its tag shows the magnet's source with a suffix —
+"json · Magnet". The "Has files" filter is unchanged — magnets
+still don't count there; only the poster's display changes.
+
 ## v1.8.5 — 2026-11-16
 
 Matching robustness and loading performance. Three reports from
