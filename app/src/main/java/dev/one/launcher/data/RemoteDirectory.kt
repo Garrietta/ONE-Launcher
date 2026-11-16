@@ -222,8 +222,15 @@ fun parsePlainFileList(feedUrl: String, rawJson: String): RemoteListingResult {
         val resolved = resolveUrl(feedUrl, url) ?: return@mapNotNull null
         // Optional numeric size, when the list carries one; anything
         // else (missing, a string, a negative) means "unknown".
+        // JsonPrimitive has no longOrNull in kotlinx-serialization
+        // 1.7.3, so parse the content text — guarded by isString, so a
+        // JSON string like "123" is not mistaken for a size.
         val sizePrimitive = item["size"] as? JsonPrimitive
-        val size = sizePrimitive?.longOrNull?.takeIf { it >= 0 }
+        val size = if (sizePrimitive != null && !sizePrimitive.isString) {
+            sizePrimitive.content.toLongOrNull()?.takeIf { it >= 0 }
+        } else {
+            null
+        }
         RemoteEntry(name = name, url = resolved, isFolder = false, sizeBytes = size)
     }
     if (entries.isEmpty()) return RemoteListingResult.Error(REMOTE_FOLDER_ERROR)

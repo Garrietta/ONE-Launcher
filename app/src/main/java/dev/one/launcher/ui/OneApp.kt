@@ -11,6 +11,7 @@ import android.widget.Toast
 import androidx.documentfile.provider.DocumentFile
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -2211,6 +2212,7 @@ private fun RemoteBrowserScreen(viewModel: OneViewModel, modifier: Modifier = Mo
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun RemoteBrowserRow(
     entry: RemoteEntry,
