@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Portside" parent="Theme.Material3.DayNight.NoActionBar" />
+    <style name="Theme.Marquee" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="android:windowBackground">#FF0B0B0D</item>
+    </style>
 </resources>

@@ -1,4 +1,4 @@
-# adapter.yml -- GitHub Actions workflow for the Portside/ONE JSON adapter.
+# adapter.yml -- GitHub Actions workflow for the Marquee/ONE JSON adapter.
 #
 # Runs json-adapter.py on a schedule and publishes the output remote.json
 # to GitHub Pages, so the app can point a Remote folder at a stable URL:

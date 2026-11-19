@@ -1,5 +1,59 @@
 # Changelog
 
+## v1.9.0 — 2026-11-19
+
+**Portside is now Marquee.** New name, new icon, new look.
+
+**Name.** The app label, theme, wordmark, README and user-facing
+strings say Marquee. The package (`com.garrietta.one`), signing key and
+on-device folders (`Downloads/ONE`) are unchanged, so v1.9.0 installs
+over v1.8.8 and keeps every setting, cache and download.
+
+**Icon.** A new adaptive icon: a shelf of game spines with one cover
+pulled forward, framed in white with a play mark, on a deep marquee-red
+gradient. It is all vector (no PNG), and it ships a monochrome layer
+for Android 13+ themed icons. `tools/make_icon.py` generates the three
+vector drawables and the `docs/icon.svg`/`docs/icon.png` preview from
+one shape list.
+
+**Library redesign — touch-first, no button hints.** Modelled on the
+"ONE" handheld concept video, rebuilt for phones and tablets:
+- The whole screen is washed in the selected game's platform color
+  (`PlatformTint`: Switch red, N64 green, PS2 blue …), with the cover
+  art blurred faintly behind it and two soft light sweeps.
+- Games stand on a shelf as spines with their titles running up the
+  side; the selected game is pulled forward as a full cover in a white
+  frame. Tap a spine to pull it forward, tap the cover to open the game.
+- The selected game's title is set huge under the shelf with its
+  platform, port count, install status and file source, plus a solid
+  **Play** pill (when a port is installed — it launches it directly) or
+  **Open**, and a translucent **Details** pill. Swipe left/right across
+  the title to step through the shelf.
+- "Ready to play" and "Has files" collections sit at the bottom as
+  small cover strips; tapping one selects that game.
+- Wide windows (tablets, unfolded foldables, phones in landscape) get
+  a console rail on the left; narrow ones get a swipeable row of
+  console tabs. The "Has files" filter is a pill beside the shelf
+  title; search is an icon in the top bar.
+- No bottom navigation bar or side rail: Cloud and Settings are icons
+  in the top bar, and every other page has a back arrow (and the
+  system back gesture). The unfolded grid + detail pane is replaced by
+  the shelf; game and port pages open full screen on both postures.
+
+**Game and port pages.** Same platform-tinted backdrop behind a
+transparent top bar; the header is the framed cover beside a big title,
+with a solid Play pill on the game page when a port is installed.
+
+**Type and color.** Archivo (SIL OFL 1.1, bundled in `res/font`,
+license in `FONT-LICENSE-Archivo.txt`) for all text — ExtraBold/Black
+for titles and the wordmark. The lime accent is gone: primary actions
+are off-white pills with dark text, everything else is white and greys
+on the platform tint. The window background is dark from the first
+frame (no white flash on launch).
+
+Not device-tested in this round — needs a retest on the Fold (folded
+and unfolded) and a phone in landscape.
+
 ## v1.8.8 — 2026-11-16
 
 Garrett's v1.8.7 video, four reports in one round: the status-bar

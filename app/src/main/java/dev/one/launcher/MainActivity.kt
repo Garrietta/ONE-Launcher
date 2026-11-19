@@ -14,12 +14,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.one.launcher.ui.OneApp
 import dev.one.launcher.ui.OneViewModel
 import dev.one.launcher.ui.OneViewModelFactory
-import dev.one.launcher.ui.theme.PortsideTheme
+import dev.one.launcher.ui.theme.MarqueeTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // The theme is FIXED dark (PortsideTheme: darkColorScheme,
+        // The theme is FIXED dark (MarqueeTheme: darkColorScheme,
         // background #0B0B0D, no light theme) on every device — but
         // bare enableEdgeToEdge() follows the SYSTEM theme, so on a
         // light-system device the status-bar icons are dark (black)
@@ -33,7 +33,7 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT)
         )
         setContent {
-            PortsideTheme {
+            MarqueeTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background

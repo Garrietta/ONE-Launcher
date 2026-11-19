@@ -35,7 +35,7 @@ class DiskCacheTest {
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
-    private fun tempDir(): File = Files.createTempDirectory("portside-cache-test").toFile()
+    private fun tempDir(): File = Files.createTempDirectory("marquee-cache-test").toFile()
 
     private val sampleEntries = listOf(
         RemoteEntry(

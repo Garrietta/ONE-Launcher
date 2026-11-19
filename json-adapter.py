@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""json-adapter.py -- Static JSON adapter for the Portside/ONE remote folder.
+"""json-adapter.py -- Static JSON adapter for the Marquee/ONE remote folder.
 
 Reads a category site -- an index page whose sidebar links to category
 subpages, each grouping files into HTML tables -- and emits a flat JSON
@@ -121,7 +121,7 @@ import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
 
-USER_AGENT = "portside-json-adapter/1.0 (+https://github.com/Garrietta/ONE-Launcher)"
+USER_AGENT = "marquee-json-adapter/1.0 (+https://github.com/Garrietta/ONE-Launcher)"
 FETCH_TIMEOUT_S = 30
 
 # A header or link that marks a torrent / P2P column or link.
@@ -1092,7 +1092,7 @@ def filter_region_records(records):
 
 def main(argv=None):
     arg_parser = argparse.ArgumentParser(
-        description="Build a flat JSON file list for the Portside/ONE "
+        description="Build a flat JSON file list for the Marquee/ONE "
         "remote folder from a category site."
     )
     arg_parser.add_argument(
