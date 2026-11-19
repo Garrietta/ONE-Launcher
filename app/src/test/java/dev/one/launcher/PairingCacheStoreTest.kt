@@ -43,7 +43,7 @@ class PairingCacheStoreTest {
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    private fun tempDir(): File = Files.createTempDirectory("portside-pairing-cache-test").toFile()
+    private fun tempDir(): File = Files.createTempDirectory("marquee-pairing-cache-test").toFile()
 
     /** A cache built the way the ViewModel builds it: GameFiles and
      *  magnet links converted with toCached(), so the Premiumize

@@ -157,7 +157,7 @@ data class ApkInstallState(
     val progress: Float = 0f,
     /** APK file in Downloads/ONE, ready for the system installer. */
     val downloadedFile: File? = null,
-    /** True when installs from unknown sources are not yet allowed for Portside. */
+    /** True when installs from unknown sources are not yet allowed for Marquee. */
     val blockedByUnknownSources: Boolean = false,
     val error: String? = null,
     /** True when the downloaded APK matched the catalog SHA-256. */
@@ -1781,7 +1781,7 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Hand the downloaded APK to the system installer. If Portside is not yet
+     * Hand the downloaded APK to the system installer. If Marquee is not yet
      * allowed to install unknown apps, mark the state blocked instead —
      * the UI explains and offers the system settings screen.
      */
@@ -1804,7 +1804,7 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
         app.startActivity(intent)
     }
 
-    /** Open the system screen where the user allows Portside to install apps. */
+    /** Open the system screen where the user allows Marquee to install apps. */
     fun openUnknownSourcesSettings() {
         val app = getApplication<Application>()
         val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
@@ -1865,7 +1865,7 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * Add a user-entered shortcut. Returns true when it was accepted.
      * The link is stored on this device only; tapping it later just opens
-     * it in the external browser — Portside never downloads from it.
+     * it in the external browser — Marquee never downloads from it.
      */
     fun addCustomLink(name: String, rawUrl: String): Boolean {
         val cleanName = name.trim()
@@ -2061,7 +2061,7 @@ class OneViewModel(application: Application) : AndroidViewModel(application) {
             val creds = remoteCredentials.load(source.id)
             val request = DownloadManager.Request(Uri.parse(entry.url)).apply {
                 setTitle(fileName)
-                setDescription("Portside remote folder")
+                setDescription("Marquee remote folder")
                 setNotificationVisibility(
                     DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
                 )

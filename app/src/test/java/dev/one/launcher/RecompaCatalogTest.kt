@@ -626,7 +626,7 @@ class RecompaCatalogTest {
         // encode the parsed index to a file stream, decode it back
         // from the file stream, and get the identical index.
         val index = parseRecompaIndex(cannedIndex)!!
-        val dir = Files.createTempDirectory("portside-index-test").toFile()
+        val dir = Files.createTempDirectory("marquee-index-test").toFile()
         val file = File(dir, "recompa-index.json")
         file.outputStream().buffered().use { streamJson.encodeToStream(index, it) }
         val loaded = file.inputStream().buffered()

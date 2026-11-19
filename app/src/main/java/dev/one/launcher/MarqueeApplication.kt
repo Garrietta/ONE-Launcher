@@ -19,7 +19,7 @@ import coil.memory.MemoryCache
  * cache key as a placeholder (see OneApp), so the art appears
  * instantaneously at 0 ms while the higher-res crop settles.
  */
-class PortsideApplication : Application(), ImageLoaderFactory {
+class MarqueeApplication : Application(), ImageLoaderFactory {
     override fun newImageLoader(): ImageLoader {
         return ImageLoader.Builder(this)
             .memoryCache {

@@ -91,6 +91,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
@@ -158,8 +159,9 @@ import dev.one.launcher.data.posterSourceLabel
 import dev.one.launcher.data.posterStatusText
 import dev.one.launcher.data.rankPortsByStars
 import dev.one.launcher.data.shouldShowRemoteEntry
-import dev.one.launcher.data.unfoldedGridColumns
 import dev.one.launcher.model.Port
+import dev.one.launcher.ui.theme.MarqueeInk
+import dev.one.launcher.ui.theme.MarqueeInkMuted
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -195,292 +197,203 @@ fun OneApp(viewModel: OneViewModel) {
     val activity = LocalContext.current as Activity
     val windowSizeClass = calculateWindowSizeClass(activity)
     val unfolded = rememberUnfolded(activity, windowSizeClass)
+    // Marquee (v1.9.0): the console rail shows whenever the window is
+    // wider than a phone held upright — tablets, unfolded foldables,
+    // and phones in landscape. There is no bottom navigation bar and
+    // no side navigation rail any more: Cloud and Settings are icons
+    // in the Library's top bar, and every other screen has a back arrow
+    // (and the system back gesture).
+    val wide = unfolded || windowSizeClass.widthSizeClass != WindowWidthSizeClass.Compact
     val navController = rememberNavController()
-    val backStackEntry by navController.currentBackStackEntryAsState()
-    val currentRoute = backStackEntry?.destination?.route
-    val destinations = listOf(
-        OneDestination.Library,
-        OneDestination.Cloud,
-        OneDestination.Settings
-    )
 
-    Scaffold(
-        bottomBar = {
-            if (!unfolded) {
-                NavigationBar {
-                    destinations.forEach { dest ->
-                        val selected = currentRoute == dest.route ||
-                            (dest == OneDestination.Library &&
-                                (currentRoute?.startsWith("detail/") == true ||
-                                    currentRoute?.startsWith("game/") == true)) ||
-                            (dest == OneDestination.Settings &&
-                                currentRoute?.startsWith("remote/") == true)
-                        NavigationBarItem(
-                            selected = selected,
-                            onClick = {
-                                navController.navigate(dest.route) {
-                                    popUpTo(navController.graph.findStartDestination().id) {
-                                        saveState = true
-                                    }
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
-                            },
-                            icon = { Icon(dest.icon, contentDescription = dest.label) },
-                            label = { Text(dest.label) }
-                        )
-                    }
+    NavHost(
+        navController = navController,
+        startDestination = OneDestination.Library.route,
+        modifier = Modifier.fillMaxSize()
+    ) {
+        composable(OneDestination.Library.route) {
+            LibraryScreen(
+                viewModel = viewModel,
+                wide = wide,
+                onOpenGame = { key -> navController.navigate("game/$key") },
+                onOpenCloud = {
+                    navController.navigate(OneDestination.Cloud.route) { launchSingleTop = true }
+                },
+                onOpenSettings = {
+                    navController.navigate(OneDestination.Settings.route) { launchSingleTop = true }
                 }
+            )
+        }
+        composable("detail/{portId}") { entry ->
+            val id = entry.arguments?.getString("portId") ?: return@composable
+            val port = viewModel.portById(id) ?: return@composable
+            TintedPage(
+                title = "",
+                platform = port.platformName.ifBlank { port.system },
+                coverUrl = port.coverArtUrl,
+                onBack = { navController.popBackStack() }
+            ) { contentModifier ->
+                GameDetailContent(
+                    viewModel = viewModel,
+                    port = port,
+                    onGoToCloud = {
+                        navController.navigate(OneDestination.Cloud.route) { launchSingleTop = true }
+                    },
+                    modifier = contentModifier
+                )
             }
         }
-    ) { padding ->
-        Row(modifier = Modifier.fillMaxSize().padding(padding)) {
-            if (unfolded) {
-                NavigationRail {
-                    destinations.forEach { dest ->
-                        val selected = currentRoute == dest.route ||
-                            (dest == OneDestination.Library &&
-                                (currentRoute?.startsWith("detail/") == true ||
-                                    currentRoute?.startsWith("game/") == true)) ||
-                            (dest == OneDestination.Settings &&
-                                currentRoute?.startsWith("remote/") == true)
-                        NavigationRailItem(
-                            selected = selected,
-                            onClick = {
-                                navController.navigate(dest.route) {
-                                    popUpTo(navController.graph.findStartDestination().id) {
-                                        saveState = true
-                                    }
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
-                            },
-                            icon = { Icon(dest.icon, contentDescription = dest.label) },
-                            label = { Text(dest.label) }
-                        )
-                    }
-                }
+        composable("game/{gameKey}") { entry ->
+            val key = entry.arguments?.getString("gameKey") ?: return@composable
+            val game = viewModel.gameByKey(key) ?: return@composable
+            TintedPage(
+                title = "",
+                platform = game.platform,
+                coverUrl = game.coverArtUrl,
+                onBack = { navController.popBackStack() }
+            ) { contentModifier ->
+                GamePageContent(
+                    viewModel = viewModel,
+                    game = game,
+                    onOpenDetail = { id -> navController.navigate("detail/$id") },
+                    onGoToCloud = {
+                        navController.navigate(OneDestination.Cloud.route) { launchSingleTop = true }
+                    },
+                    modifier = contentModifier
+                )
             }
-            NavHost(
-                navController = navController,
-                startDestination = OneDestination.Library.route,
-                modifier = Modifier.weight(1f)
-            ) {
-                composable(OneDestination.Library.route) {
-                    LibraryScreen(
-                        viewModel = viewModel,
-                        unfolded = unfolded,
-                        onSelectGame = { viewModel.selectGame(it) },
-                        onOpenGame = { key ->
-                            if (!unfolded) navController.navigate("game/$key")
-                        },
-                        onOpenDetail = { id ->
-                            if (unfolded) {
-                                viewModel.selectPort(id)
-                            } else {
-                                navController.navigate("detail/$id")
+        }
+        composable(OneDestination.Cloud.route) {
+            PlainPage(onBack = { navController.popBackStack() }) {
+                CloudScreen(
+                    viewModel = viewModel,
+                    onOpenDetail = { id -> navController.navigate("detail/$id") }
+                )
+            }
+        }
+        composable(OneDestination.Settings.route) {
+            PlainPage(onBack = { navController.popBackStack() }) {
+                SettingsScreen(
+                    viewModel = viewModel,
+                    onOpenRemoteFolder = { id -> navController.navigate("remote/$id") }
+                )
+            }
+        }
+        composable("remote/{sourceId}") { entry ->
+            val sourceId = entry.arguments?.getString("sourceId")
+                ?: return@composable
+            val source = viewModel.remoteFolders.collectAsState().value
+                .firstOrNull { it.id == sourceId } ?: return@composable
+            LaunchedEffect(sourceId) { viewModel.openRemoteFolder(sourceId) }
+            Scaffold(
+                topBar = {
+                    TopAppBar(
+                        title = { Text(source.name) },
+                        navigationIcon = {
+                            IconButton(onClick = {
+                                if (!viewModel.navigateRemoteBack()) {
+                                    navController.popBackStack()
+                                }
+                            }) {
+                                Icon(
+                                    Icons.Filled.ArrowBack,
+                                    contentDescription = "Back"
+                                )
                             }
                         },
-                        onGoToCloud = {
-                            navController.navigate(OneDestination.Cloud.route) {
-                                launchSingleTop = true
+                        actions = {
+                            IconButton(onClick = { viewModel.refreshRemoteBrowser() }) {
+                                Icon(
+                                    Icons.Filled.Refresh,
+                                    contentDescription = "Refresh folder"
+                                )
                             }
                         }
                     )
                 }
-                composable("detail/{portId}") { entry ->
-                    val id = entry.arguments?.getString("portId") ?: return@composable
-                    val port = viewModel.portById(id) ?: return@composable
-                    Scaffold(
-                        topBar = {
-                            TopAppBar(
-                                title = { Text(port.title) },
-                                navigationIcon = {
-                                    IconButton(onClick = { navController.popBackStack() }) {
-                                        Icon(
-                                            Icons.Filled.ArrowBack,
-                                            contentDescription = "Back"
-                                        )
-                                    }
-                                }
-                            )
-                        }
-                    ) { innerPadding ->
-                        Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-                            AmbientCachedBackground(coverUrl = port.coverArtUrl)
-                            GameDetailContent(
-                                viewModel = viewModel,
-                                port = port,
-                                onGoToCloud = {
-                                    navController.navigate(OneDestination.Cloud.route) {
-                                        launchSingleTop = true
-                                    }
-                                },
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        }
-                    }
-                }
-                composable("game/{gameKey}") { entry ->
-                    val key = entry.arguments?.getString("gameKey") ?: return@composable
-                    val game = viewModel.gameByKey(key) ?: return@composable
-                    Scaffold(
-                        topBar = {
-                            TopAppBar(
-                                title = { Text(game.title) },
-                                navigationIcon = {
-                                    IconButton(onClick = { navController.popBackStack() }) {
-                                        Icon(
-                                            Icons.Filled.ArrowBack,
-                                            contentDescription = "Back"
-                                        )
-                                    }
-                                }
-                            )
-                        }
-                    ) { innerPadding ->
-                        Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-                            AmbientCachedBackground(coverUrl = game.coverArtUrl)
-                            GamePageContent(
-                                viewModel = viewModel,
-                                game = game,
-                                onOpenDetail = { id -> navController.navigate("detail/$id") },
-                                onGoToCloud = {
-                                    navController.navigate(OneDestination.Cloud.route) {
-                                        launchSingleTop = true
-                                    }
-                                },
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        }
-                    }
-                }
-                composable(OneDestination.Cloud.route) {
-                    CloudScreen(
-                        viewModel = viewModel,
-                        onOpenDetail = { id -> navController.navigate("detail/$id") }
-                    )
-                }
-                composable(OneDestination.Settings.route) {
-                    SettingsScreen(
-                        viewModel = viewModel,
-                        onOpenRemoteFolder = { id ->
-                            navController.navigate("remote/$id")
-                        }
-                    )
-                }
-                composable("remote/{sourceId}") { entry ->
-                    val sourceId = entry.arguments?.getString("sourceId")
-                        ?: return@composable
-                    val source = viewModel.remoteFolders.collectAsState().value
-                        .firstOrNull { it.id == sourceId } ?: return@composable
-                    LaunchedEffect(sourceId) { viewModel.openRemoteFolder(sourceId) }
-                    Scaffold(
-                        topBar = {
-                            TopAppBar(
-                                title = { Text(source.name) },
-                                navigationIcon = {
-                                    IconButton(onClick = {
-                                        if (!viewModel.navigateRemoteBack()) {
-                                            navController.popBackStack()
-                                        }
-                                    }) {
-                                        Icon(
-                                            Icons.Filled.ArrowBack,
-                                            contentDescription = "Back"
-                                        )
-                                    }
-                                },
-                                actions = {
-                                    IconButton(onClick = { viewModel.refreshRemoteBrowser() }) {
-                                        Icon(
-                                            Icons.Filled.Refresh,
-                                            contentDescription = "Refresh folder"
-                                        )
-                                    }
-                                }
-                            )
-                        }
-                    ) { innerPadding ->
-                        RemoteBrowserScreen(
-                            viewModel = viewModel,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(innerPadding)
-                        )
-                    }
-                }
+            ) { innerPadding ->
+                RemoteBrowserScreen(
+                    viewModel = viewModel,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding)
+                )
             }
         }
     }
 }
 
-// ---- Ambient background ----
-
 /**
- * A blurred, darkened wash of the selected game's cached cover art
- * drawn behind the screen (v1.8.7). The 128x128 downsample is cheap,
- * the heavy blur runs on the GPU RenderNode (Android 12+), and the
- * dark gradient scrim keeps the content readable. The theme colors
- * and the content layout are unchanged — this is only a backdrop.
- * When there is no cover art, nothing is drawn.
+ * A game or port page: the platform-tinted backdrop full-bleed behind a
+ * transparent top bar with a back arrow.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AmbientCachedBackground(
+private fun TintedPage(
+    title: String,
+    platform: String,
     coverUrl: String,
-    modifier: Modifier = Modifier
+    onBack: () -> Unit,
+    content: @Composable (Modifier) -> Unit
 ) {
-    if (coverUrl.isBlank()) return
-    val context = LocalContext.current
-    Box(modifier = modifier.fillMaxSize()) {
-        AsyncImage(
-            model = ImageRequest.Builder(context)
-                .data(coverUrl)
-                .size(128)
-                .memoryCacheKey("$coverUrl#ambient")
-                .placeholderMemoryCacheKey(coverUrl)
-                .crossfade(300)
-                .build(),
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier
-                .fillMaxSize()
-                .blur(64.dp)
-                .alpha(0.22f)
-        )
-        // Dark scrim so the Library/detail content stays readable
-        // over the blurred art.
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color.Black.copy(alpha = 0.55f),
-                            Color.Black.copy(alpha = 0.35f),
-                            Color.Black.copy(alpha = 0.65f)
-                        )
+    Box(modifier = Modifier.fillMaxSize()) {
+        PlatformBackdrop(platform = platform, coverUrl = coverUrl)
+        Scaffold(
+            containerColor = Color.Transparent,
+            topBar = {
+                TopAppBar(
+                    title = {
+                        Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = Color.Transparent,
+                        scrolledContainerColor = Color.Transparent
                     )
                 )
-        )
+            }
+        ) { innerPadding ->
+            content(Modifier.fillMaxSize().padding(innerPadding))
+        }
+    }
+}
+
+/** Cloud and Settings: a plain dark page with a back arrow above the screen. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PlainPage(onBack: () -> Unit, content: @Composable () -> Unit) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {},
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                }
+            )
+        }
+    ) { innerPadding ->
+        Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) { content() }
     }
 }
 
 // ---- Library ----
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LibraryScreen(
     viewModel: OneViewModel,
-    unfolded: Boolean,
-    onSelectGame: (String) -> Unit,
+    wide: Boolean,
     onOpenGame: (String) -> Unit,
-    onOpenDetail: (String) -> Unit,
-    onGoToCloud: () -> Unit
+    onOpenCloud: () -> Unit,
+    onOpenSettings: () -> Unit
 ) {
     val statuses by viewModel.portStatuses.collectAsState()
     val selectedGameKey by viewModel.selectedGameKey.collectAsState()
-    val ports by viewModel.portsFlow.collectAsState()
     val games by viewModel.gamesFlow.collectAsState()
     val gamesWithFiles by viewModel.gamesWithFilesFlow.collectAsState()
     val catalogState by viewModel.catalogState.collectAsState()
@@ -489,24 +402,17 @@ private fun LibraryScreen(
 
     // Search + platform filter (v1.8.2): the filter state lives in the
     // ViewModel, not in a composable's `remember` — so navigating into
-    // a game page and back restores the previous Library state instead
-    // of resetting to the default main screen. The platform options
-    // come from the games themselves, so a curated-only port's
-    // platform ("Super Nintendo") and its catalog sibling's platform
-    // name always agree. "Has files" is a third, additional filter:
-    // only games with at least one matching file or magnet link
-    // (local, cloud, or server; v1.8.8: magnets count). Off by
-    // default.
+    // a game page and back restores the previous Library state. The
+    // platform options come from the games themselves. "Has files" is
+    // a third, additional filter: only games with at least one matching
+    // file or magnet link (local, cloud, or server). Off by default.
     val libraryFilter by viewModel.libraryFilter.collectAsState()
-    val query = libraryFilter.query
-    val platformFilter = libraryFilter.platform
     val matchesOnly = libraryFilter.matchesOnly
     LaunchedEffect(matchesOnly) {
         if (matchesOnly) viewModel.ensureAllFilesForFilter()
     }
     val platformOptions = remember(games) {
         games.map { it.platform }.distinct().sorted()
-            .map { it to it }
     }
     val filteredGames = remember(games, libraryFilter, gamesWithFiles) {
         filterGames(games, libraryFilter, gamesWithFiles)
@@ -521,587 +427,40 @@ private fun LibraryScreen(
         is CatalogState.Unavailable -> state.message
     }
 
-    // No refreshLibrary() here (v1.8.7): OneViewModel.init already
-    // runs it once, and re-running a full local-folder + Downloads
-    // re-scan on every navigation back to Library wasted work. The
-    // Library refreshes from init, the explicit refresh button, and
-    // download/assignment completion callbacks.
-
-    // The selected game: the ViewModel's selection when one is set,
-    // else the first game in the filtered list.
+    // The selected game: the ViewModel's selection when it is in the
+    // filtered list, else the first game in the filtered list.
     val selectedGame = remember(filteredGames, selectedGameKey) {
         selectedGameKey?.let { key -> filteredGames.firstOrNull { it.key == key } }
             ?: filteredGames.firstOrNull()
     }
 
-    // Ambient background (v1.8.7): a blurred wash of the selected
-    // game's cover art behind the Library. The theme colors and the
-    // content layout are unchanged.
-    Box(modifier = Modifier.fillMaxSize()) {
-        AmbientCachedBackground(coverUrl = selectedGame?.coverArtUrl.orEmpty())
-        if (unfolded) {
-            // Unfolded: no vertical console rail — the consoles are a
-            // horizontal row on top and the games are a vertical grid
-            // (3 wide with the detail pane open, 5 wide when it is
-            // closed). The detail pane keeps the game/port page, with an
-            // X to close it.
-            UnfoldedLibrary(
-                viewModel = viewModel,
-                games = filteredGames,
-                statuses = statuses,
-                pairingCache = pairingCache,
-                magnetPairings = magnetPairings,
-                selectedGame = selectedGame,
-                onSelectGame = onSelectGame,
-                onOpenDetail = onOpenDetail,
-                onGoToCloud = onGoToCloud,
-                onRefresh = { viewModel.refreshCatalog() },
-                query = query,
-                onQueryChange = { viewModel.setLibraryQuery(it) },
-                platformOptions = platformOptions,
-                selectedPlatform = platformFilter,
-                onPlatformChange = { viewModel.setLibraryPlatform(it) },
-                matchesOnly = matchesOnly,
-                onMatchesOnlyChange = { viewModel.setLibraryMatchesOnly(it) },
-                catalogStatusText = catalogStatusText
-            )
-        } else {
-            GameList(
-                games = filteredGames,
-                statuses = statuses,
-                pairingCache = pairingCache,
-                magnetPairings = magnetPairings,
-                onOpenGame = onOpenGame,
-                modifier = Modifier.fillMaxSize(),
-                onRefresh = { viewModel.refreshCatalog() },
-                query = query,
-                onQueryChange = { viewModel.setLibraryQuery(it) },
-                platformOptions = platformOptions,
-                selectedPlatform = platformFilter,
-                onPlatformChange = { viewModel.setLibraryPlatform(it) },
-                matchesOnly = matchesOnly,
-                onMatchesOnlyChange = { viewModel.setLibraryMatchesOnly(it) },
-                catalogStatusText = catalogStatusText
-            )
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
-@Composable
-private fun GameList(
-    games: List<GameEntry>,
-    statuses: Map<String, PortStatus>,
-    pairingCache: Map<String, List<GameFile>>,
-    magnetPairings: Map<String, List<GameMagnetLink>>,
-    onOpenGame: (String) -> Unit,
-    modifier: Modifier,
-    onRefresh: () -> Unit,
-    query: String,
-    onQueryChange: (String) -> Unit,
-    platformOptions: List<Pair<String, String>>,
-    selectedPlatform: String,
-    onPlatformChange: (String) -> Unit,
-    matchesOnly: Boolean,
-    onMatchesOnlyChange: (Boolean) -> Unit,
-    catalogStatusText: String
-) {
-    // Scroll position is saved across navigation (v1.8.2): returning
-    // from a game page restores where the list was, instead of jumping
-    // back to the top.
-    val gridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
-
-    // Games ready to play (any port installed) get a compact shelf at
-    // the top, so active games are always one tap away.
-    val readyGames = remember(games, statuses) {
-        games.filter { game ->
-            game.ports.any { statuses[it.id]?.isInstalled == true }
-        }
-    }
-
-    Column(modifier = modifier) {
-        // The PORTSIDE header stays fixed at the top; everything
-        // below it scrolls.
-        LibraryHeader(onRefresh = onRefresh)
-        // 2-column grid (v1.8.7): the folded Library was a single
-        // horizontal LazyRow of all 529 games with the bottom 60% of
-        // the cover screen empty (plus a spacer just to make the top
-        // bar collapsible). Now the games fill a vertical 2-column
-        // grid, matching the unfolded grid architecture, and the top
-        // bar (search, "Has files", console chips, catalog status)
-        // scrolls away with it. Tapping a card opens the game page
-        // immediately; the poster tags (v1.8.6) ride on the cards.
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(2),
-            state = gridState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            // The top bar scrolls away on a scroll.
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                LibrarySearchRow(
-                    query = query,
-                    onQueryChange = onQueryChange,
-                    matchesOnly = matchesOnly,
-                    onMatchesOnlyChange = onMatchesOnlyChange
-                )
-            }
-            if (platformOptions.isNotEmpty()) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    ConsoleChipRow(
-                        platformOptions = platformOptions,
-                        selectedPlatform = selectedPlatform,
-                        onPlatformChange = onPlatformChange
-                    )
-                }
-            }
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                Text(
-                    text = catalogStatusText,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                )
-            }
-            // Compact ready shelf: installed games only, one tap away.
-            if (readyGames.isNotEmpty()) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    Column {
-                        Text(
-                            text = "Ready to play",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
-                        LazyRow(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            items(readyGames, key = { it.key }) { game ->
-                                val anyInstalled = true
-                                val matchedFiles = pairingCache[game.key].orEmpty()
-                                val matchedMagnets = magnetPairings[game.key].orEmpty()
-                                val anyFile = game.ports.any { statuses[it.id]?.hasFile == true } ||
-                                    matchedFiles.isNotEmpty()
-                                val statusText = posterStatusText(anyInstalled, anyFile)
-                                val sourceLabel = posterSourceLabel(matchedFiles, matchedMagnets)
-                                GameGridCard(
-                                    game = game,
-                                    selected = false,
-                                    isInstalled = anyInstalled,
-                                    statusText = statusText,
-                                    sourceLabel = sourceLabel,
-                                    onClick = { onOpenGame(game.key) },
-                                    modifier = Modifier.width(120.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-            items(games, key = { it.key }) { game ->
-                val anyInstalled = game.ports.any { statuses[it.id]?.isInstalled == true }
-                // The poster tag (v1.8.6, status v1.8.8): a matched
-                // magnet counts like a matched file for the SOURCE
-                // tag — a magnet-only game ('Splosion Man's Triple
-                // Pack magnet) shows "json · Magnet", and that chip
-                // is the single magnet indicator: the status is
-                // install state only ("Not installed" / "Installed"
-                // / "Ready to play"), never "Magnet matched". "Has
-                // files" counts magnets now (v1.8.8).
-                val matchedFiles = pairingCache[game.key].orEmpty()
-                val matchedMagnets = magnetPairings[game.key].orEmpty()
-                val anyFile = game.ports.any { statuses[it.id]?.hasFile == true } ||
-                    matchedFiles.isNotEmpty()
-                val statusText = posterStatusText(anyInstalled, anyFile)
-                val sourceLabel = posterSourceLabel(matchedFiles, matchedMagnets)
-                GameGridCard(
-                    game = game,
-                    selected = false,
-                    isInstalled = anyInstalled,
-                    statusText = statusText,
-                    sourceLabel = sourceLabel,
-                    onClick = { onOpenGame(game.key) }
-                )
-            }
-        }
-    }
-}
-
-
-/**
- * The PORTSIDE header, fixed at the top of the Library in both
- * postures. The refresh button re-fetches the catalog.
- */
-@Composable
-private fun LibraryHeader(onRefresh: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = "PORTSIDE",
-            style = MaterialTheme.typography.headlineMedium,
-            modifier = Modifier.weight(1f)
-        )
-        IconButton(onClick = onRefresh) {
-            Icon(Icons.Filled.Refresh, contentDescription = "Refresh library and catalog")
-        }
-    }
-}
-
-/**
- * The Library search row: the search box and the "Has files" chip
- * beside it. Shared by the folded and unfolded layouts.
- */
-@Composable
-private fun LibrarySearchRow(
-    query: String,
-    onQueryChange: (String) -> Unit,
-    matchesOnly: Boolean,
-    onMatchesOnlyChange: (Boolean) -> Unit
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        OutlinedTextField(
-            value = query,
-            onValueChange = onQueryChange,
-            label = { Text("Search games") },
-            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-            singleLine = true,
-            modifier = Modifier.weight(1f)
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-        // "Has files": only games with at least one matching file
-        // or magnet link (local, cloud, or server; v1.8.8: magnets
-        // count). Composes with the platform filter.
-        FilterChip(
-            selected = matchesOnly,
-            onClick = { onMatchesOnlyChange(!matchesOnly) },
-            label = { Text("Has files") }
-        )
-    }
-}
-
-/**
- * The console (platform) options as one horizontally scrolling chip
- * row. Folded it is the row under the search box; unfolded it is the
- * row at the top of the Library, replacing the old vertical console
- * rail. The options and the filtering behavior are the same in both
- * postures.
- */
-@Composable
-private fun ConsoleChipRow(
-    platformOptions: List<Pair<String, String>>,
-    selectedPlatform: String,
-    onPlatformChange: (String) -> Unit
-) {
-    // One horizontally scrolling row, not a wrapping grid: on the
-    // folded screen the old FlowRow ran to ~6 rows and left room for
-    // about one port card below it.
-    Row(
-        modifier = Modifier.fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        FilterChip(
-            selected = selectedPlatform.isEmpty(),
-            onClick = { onPlatformChange("") },
-            label = { Text("All") }
-        )
-        platformOptions.forEach { (id, name) ->
-            FilterChip(
-                selected = selectedPlatform == id,
-                onClick = { onPlatformChange(id) },
-                label = { Text(name) }
-            )
-        }
-    }
-}
-
-/**
- * The unfolded Library (v1.7.0): no vertical console rail — the
- * consoles are a horizontal chip row at the top, above a vertically
- * scrolling GRID of games. The grid is 3 columns wide while the
- * detail pane is open and expands to 5 wide when the pane is closed
- * (see [unfoldedGridColumns]). The detail pane shows the selected
- * game's page (or a port's detail page, when one is open from it),
- * with an X in the corner to close it. Selecting a game in the grid
- * reopens the pane for that game.
- */
-@Composable
-private fun UnfoldedLibrary(
-    viewModel: OneViewModel,
-    games: List<GameEntry>,
-    statuses: Map<String, PortStatus>,
-    pairingCache: Map<String, List<GameFile>>,
-    magnetPairings: Map<String, List<GameMagnetLink>>,
-    selectedGame: GameEntry?,
-    onSelectGame: (String) -> Unit,
-    onOpenDetail: (String) -> Unit,
-    onGoToCloud: () -> Unit,
-    onRefresh: () -> Unit,
-    query: String,
-    onQueryChange: (String) -> Unit,
-    platformOptions: List<Pair<String, String>>,
-    selectedPlatform: String,
-    onPlatformChange: (String) -> Unit,
-    matchesOnly: Boolean,
-    onMatchesOnlyChange: (Boolean) -> Unit,
-    catalogStatusText: String
-) {
-    val selectedPortId by viewModel.selectedPortId.collectAsState()
-    // The detail pane starts open (it shows the selected game) and
-    // closes with its X. Selecting a game reopens it.
-    var detailOpen by remember { mutableStateOf(true) }
-    // Grid scroll position is saved across navigation (v1.8.2), like
-    // the folded list's.
-    val gridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
-    val selectedPort = selectedPortId?.let { viewModel.portById(it) }
-    // Back (v1.8.7): when a port's Details are open in the right
-    // pane, swiping Back returns the pane to the Game Page instead of
-    // exiting the app.
-    BackHandler(enabled = selectedPort != null) { viewModel.selectPort(null) }
-    // The pane is only visible when it has something to show; with
-    // no game or port selected (an empty Library) the grid takes the
-    // full width.
-    val detailVisible = detailOpen && (selectedPort != null || selectedGame != null)
-
-    Column(modifier = Modifier.fillMaxSize()) {
-        LibraryHeader(onRefresh = onRefresh)
-        LibrarySearchRow(
-            query = query,
-            onQueryChange = onQueryChange,
-            matchesOnly = matchesOnly,
-            onMatchesOnlyChange = onMatchesOnlyChange
-        )
-        if (platformOptions.isNotEmpty()) {
-            ConsoleChipRow(
-                platformOptions = platformOptions,
-                selectedPlatform = selectedPlatform,
-                onPlatformChange = onPlatformChange
-            )
-        }
-        Text(
-            text = catalogStatusText,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-        )
-        Row(modifier = Modifier.weight(1f)) {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(unfoldedGridColumns(detailVisible)),
-                state = gridState,
-                modifier = Modifier.weight(if (detailVisible) 0.42f else 1f),
-                contentPadding = PaddingValues(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                items(games, key = { it.key }) { game ->
-                    val anyInstalled = game.ports.any { statuses[it.id]?.isInstalled == true }
-                    // The poster tags (v1.8.6, status v1.8.8): the
-                    // unfolded grid posters carry the same status +
-                    // source tag as the folded shelf. A matched
-                    // magnet counts like a matched file for the
-                    // source tag (see GameList): a magnet-only game
-                    // shows "json · Magnet" as its single magnet
-                    // indicator, with an install-only status.
-                    val matchedFiles = pairingCache[game.key].orEmpty()
-                    val matchedMagnets = magnetPairings[game.key].orEmpty()
-                    val anyFile = game.ports.any { statuses[it.id]?.hasFile == true } ||
-                        matchedFiles.isNotEmpty()
-                    val statusText = posterStatusText(anyInstalled, anyFile)
-                    val sourceLabel = posterSourceLabel(matchedFiles, matchedMagnets)
-                    GameGridCard(
-                        game = game,
-                        selected = game.key == selectedGame?.key,
-                        isInstalled = anyInstalled,
-                        statusText = statusText,
-                        sourceLabel = sourceLabel,
-                        onClick = {
-                            detailOpen = true
-                            onSelectGame(game.key)
-                        }
-                    )
-                }
-            }
-            if (detailVisible) {
-                Box(
-                    modifier = Modifier.weight(0.58f).fillMaxHeight()
-                ) {
-                    if (selectedPort != null) {
-                        GameDetailContent(
-                            viewModel = viewModel,
-                            port = selectedPort,
-                            onGoToCloud = onGoToCloud,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    } else if (selectedGame != null) {
-                        GamePageContent(
-                            viewModel = viewModel,
-                            game = selectedGame,
-                            onOpenDetail = onOpenDetail,
-                            onGoToCloud = onGoToCloud,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-                    // The X: closes the detail pane; the grid expands
-                    // from 3 wide to 5 wide. Selecting a game reopens it.
-                    IconButton(
-                        onClick = { detailOpen = false },
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(8.dp)
-                            .background(
-                                Color.Black.copy(alpha = 0.6f),
-                                CircleShape
-                            )
-                    ) {
-                        Icon(
-                            Icons.Filled.Close,
-                            contentDescription = "Close details",
-                            tint = Color.White
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-/**
- * One card in the game grid (unfolded, and folded since v1.8.7):
- * the game's cover art, portrait, filling the grid column, with its
- * title and platform underneath. The selected card carries a lime
- * outline; a game with any port installed carries a small lime play
- * mark on the cover. The status ("Not installed", "Installed",
- * "Ready to play" — install state only, v1.8.8) and the file source
- * tag (Premiumize / the remote folder's name / Local, or "json ·
- * Magnet" for a magnet-only game) ride on the art (v1.8.6 — they
- * were missing here).
- */
-@Composable
-private fun GameGridCard(
-    game: GameEntry,
-    selected: Boolean,
-    isInstalled: Boolean,
-    statusText: String,
-    sourceLabel: String?,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Column(modifier = modifier) {
-        Card(
-            onClick = onClick,
-            modifier = Modifier.fillMaxWidth().aspectRatio(112f / 160f),
-            shape = RoundedCornerShape(8.dp),
-            border = if (selected) {
-                BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
-            } else {
-                null
-            },
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant
-            )
-        ) {
-            Box(modifier = Modifier.fillMaxSize()) {
-                if (game.coverArtUrl.isNotBlank()) {
-                    AsyncImage(
-                        model = game.coverArtUrl,
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = game.title.take(1),
-                            style = MaterialTheme.typography.headlineMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-                if (isInstalled) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(6.dp)
-                            .size(24.dp)
-                            .background(
-                                Color.Black.copy(alpha = 0.6f),
-                                CircleShape
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            Icons.Filled.PlayArrow,
-                            contentDescription = "Installed",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                }
-                // Status + source, stacked at the bottom of the art
-                // (v1.8.6) — the same tags as the folded shelf.
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Surface(
-                        color = Color.Black.copy(alpha = 0.6f),
-                        shape = MaterialTheme.shapes.small
-                    ) {
-                        Text(
-                            text = statusText,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                        )
-                    }
-                    if (sourceLabel != null) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.primaryContainer
-                                .copy(alpha = 0.9f),
-                            shape = MaterialTheme.shapes.small
-                        ) {
-                            Text(
-                                text = sourceLabel,
-                                style = MaterialTheme.typography.labelSmall,
-                                modifier = Modifier.padding(
-                                    horizontal = 6.dp,
-                                    vertical = 3.dp
-                                )
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        Spacer(modifier = Modifier.height(6.dp))
-        Text(
-            text = game.title,
-            style = MaterialTheme.typography.bodySmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Text(
-            text = game.platform,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-    }
+    ShowcaseLibrary(
+        games = filteredGames,
+        allGames = games,
+        statuses = statuses,
+        pairingCache = pairingCache,
+        magnetPairings = magnetPairings,
+        gamesWithFiles = gamesWithFiles,
+        selectedGame = selectedGame,
+        wide = wide,
+        query = libraryFilter.query,
+        onQueryChange = { viewModel.setLibraryQuery(it) },
+        platformOptions = platformOptions,
+        selectedPlatform = libraryFilter.platform,
+        onPlatformChange = { viewModel.setLibraryPlatform(it) },
+        matchesOnly = matchesOnly,
+        onMatchesOnlyChange = { viewModel.setLibraryMatchesOnly(it) },
+        catalogStatusText = catalogStatusText,
+        onSelectGame = { viewModel.selectGame(it) },
+        onOpenGame = { key ->
+            viewModel.selectGame(key)
+            onOpenGame(key)
+        },
+        onPlay = { portId -> viewModel.launchPort(portId) },
+        onRefresh = { viewModel.refreshCatalog() },
+        onOpenCloud = onOpenCloud,
+        onOpenSettings = onOpenSettings
+    )
 }
 
 
@@ -1283,33 +642,47 @@ private fun GameDetailContent(
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
-        if (port.coverArtUrl.isNotBlank()) {
-            AsyncImage(
-                // placeholderMemoryCacheKey (v1.8.7): the poster's
-                // cached bitmap for this URL displays instantly at
-                // 0 ms while the higher-res header crop settles.
-                model = ImageRequest.Builder(context)
-                    .data(port.coverArtUrl)
-                    .placeholderMemoryCacheKey(port.coverArtUrl)
-                    .build(),
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
+        // Hero (Marquee, v1.9.0): framed cover beside the big title.
+        Row(verticalAlignment = Alignment.Bottom) {
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(220.dp)
-                    .clip(RoundedCornerShape(12.dp))
+                    .width(108.dp)
+                    .aspectRatio(0.70f)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(MarqueeInk)
+                    .padding(3.dp)
+                    .clip(RoundedCornerShape(4.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant)
-            )
-            Spacer(modifier = Modifier.height(12.dp))
+            ) {
+                if (port.coverArtUrl.isNotBlank()) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(context)
+                            .data(port.coverArtUrl)
+                            .placeholderMemoryCacheKey(port.coverArtUrl)
+                            .build(),
+                        contentDescription = port.title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(16.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = port.title,
+                    style = MaterialTheme.typography.headlineMedium,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(text = port.game, style = MaterialTheme.typography.titleMedium)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "${port.system} · ${port.type} · ${port.repo}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MarqueeInkMuted
+                )
+            }
         }
-        Text(text = port.title, style = MaterialTheme.typography.headlineSmall)
-        Text(text = port.game, style = MaterialTheme.typography.titleMedium)
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = "${port.system} · ${port.type} · ${port.repo}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
         if (port.description.isNotBlank()) {
             Spacer(modifier = Modifier.height(8.dp))
             Text(text = port.description, style = MaterialTheme.typography.bodyMedium)
@@ -1779,7 +1152,7 @@ private fun GameDetailContent(
                 if (apkState?.blockedByUnknownSources == true) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Android blocked the install: Portside is not yet allowed " +
+                        text = "Android blocked the install: Marquee is not yet allowed " +
                             "to install apps. Allow it in system settings, then " +
                             "tap Install again.",
                         style = MaterialTheme.typography.bodyMedium
@@ -1823,7 +1196,7 @@ private fun GameDetailContent(
         Spacer(modifier = Modifier.height(16.dp))
         Text(text = "Settings for this port", style = MaterialTheme.typography.titleMedium)
         Text(
-            text = "Stored on this device. Portside does not enforce settings inside the port app.",
+            text = "Stored on this device. Marquee does not enforce settings inside the port app.",
             style = MaterialTheme.typography.bodySmall
         )
         Spacer(modifier = Modifier.height(8.dp))
@@ -2010,33 +1383,60 @@ private fun GamePageContent(
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
-        if (game.coverArtUrl.isNotBlank()) {
-            AsyncImage(
-                // placeholderMemoryCacheKey (v1.8.7): the poster's
-                // cached bitmap for this URL displays instantly at
-                // 0 ms while the higher-res header crop settles.
-                model = ImageRequest.Builder(context)
-                    .data(game.coverArtUrl)
-                    .placeholderMemoryCacheKey(game.coverArtUrl)
-                    .build(),
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
+        // Hero (Marquee, v1.9.0): the cover in a white frame beside a
+        // big title, with the solid Play pill when a port is installed.
+        val installedPort = rankedPorts.firstOrNull { statuses[it.id]?.isInstalled == true }
+        Row(verticalAlignment = Alignment.Bottom) {
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(220.dp)
-                    .clip(RoundedCornerShape(12.dp))
+                    .width(124.dp)
+                    .aspectRatio(0.70f)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(MarqueeInk)
+                    .padding(3.dp)
+                    .clip(RoundedCornerShape(4.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant)
-            )
-            Spacer(modifier = Modifier.height(12.dp))
+            ) {
+                if (game.coverArtUrl.isNotBlank()) {
+                    AsyncImage(
+                        // placeholderMemoryCacheKey (v1.8.7): the shelf's
+                        // cached bitmap for this URL displays instantly
+                        // while the higher-res cover settles.
+                        model = ImageRequest.Builder(context)
+                            .data(game.coverArtUrl)
+                            .placeholderMemoryCacheKey(game.coverArtUrl)
+                            .build(),
+                        contentDescription = game.title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(16.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = game.title,
+                    style = MaterialTheme.typography.headlineLarge,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = game.platform + "  ·  " +
+                        (if (game.ports.size == 1) "1 port" else "${game.ports.size} ports"),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MarqueeInkMuted
+                )
+            }
         }
-        Text(text = game.title, style = MaterialTheme.typography.headlineSmall)
-        Text(text = game.platform, style = MaterialTheme.typography.titleMedium)
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = if (game.ports.size == 1) "1 port" else "${game.ports.size} ports",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        if (installedPort != null) {
+            Spacer(modifier = Modifier.height(16.dp))
+            PrimaryPill(
+                label = "Play",
+                icon = Icons.Filled.PlayArrow,
+                onClick = { viewModel.launchPort(installedPort.id) }
+            )
+        }
 
         // ---- Your files ----
         Spacer(modifier = Modifier.height(16.dp))
@@ -2694,14 +2094,14 @@ private fun SettingsScreen(
         )
         Text(
             text = "Files you pull from your Premiumize cloud land here, " +
-                "in Portside's own Downloads folder.",
+                "in Marquee's own Downloads folder.",
             style = MaterialTheme.typography.bodySmall
         )
         Spacer(modifier = Modifier.height(16.dp))
 
         Text(text = "Local game files folder", style = MaterialTheme.typography.titleMedium)
         Text(
-            text = "Like a ROMs folder in an emulator: Portside pre-searches this " +
+            text = "Like a ROMs folder in an emulator: Marquee pre-searches this " +
                 "folder for files matching your ports and remembers what it " +
                 "found, so the Library badges show up even before you open " +
                 "a game's page.",
@@ -2818,14 +2218,14 @@ private fun SettingsScreen(
         Text(text = "Custom links", style = MaterialTheme.typography.titleMedium)
         Text(
             text = "Shortcuts to your own pages. Tapping one opens it in " +
-                "your browser — Portside never downloads from these links.",
+                "your browser — Marquee never downloads from these links.",
             style = MaterialTheme.typography.bodySmall
         )
         Spacer(modifier = Modifier.height(8.dp))
         if (customLinks.isEmpty()) {
             Text(
                 text = "No custom links yet. Add shortcuts to your own pages — " +
-                    "for example, your own self-hosted file archive. Portside only " +
+                    "for example, your own self-hosted file archive. Marquee only " +
                     "opens these in your browser; it never downloads from them.",
                 style = MaterialTheme.typography.bodyMedium
             )
@@ -2888,7 +2288,7 @@ private fun SettingsScreen(
 
         Text(text = "Remote folders", style = MaterialTheme.typography.titleMedium)
         Text(
-            text = "Your own file servers, browsed inside Portside. A folder " +
+            text = "Your own file servers, browsed inside Marquee. A folder " +
                 "must be served as a standard directory listing or a " +
                 "simple file list (a JSON array of {name, url}). Files " +
                 "you download land in your local game-files folder when " +
@@ -3003,12 +2403,12 @@ private fun SettingsScreen(
 
         Spacer(modifier = Modifier.height(24.dp))
         Text(text = "About", style = MaterialTheme.typography.titleMedium)
-        Text(text = "Portside ${BuildConfig.VERSION_NAME} (release build)", style = MaterialTheme.typography.bodyMedium)
+        Text(text = "Marquee ${BuildConfig.VERSION_NAME} (release build)", style = MaterialTheme.typography.bodyMedium)
         Spacer(modifier = Modifier.height(8.dp))
         TextButton(onClick = { openUrl(context, "https://recompa.app") }) {
             Text(
                 text = "Catalog data: Recompa (recompa.app), GPL-3.0 — ports are " +
-                    "their authors' own projects; Portside lists them, it does " +
+                    "their authors' own projects; Marquee lists them, it does " +
                     "not host them."
             )
         }
@@ -3019,7 +2419,7 @@ private fun SettingsScreen(
         )
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            text = "Portside is not affiliated with Nintendo, HarbourMasters, " +
+            text = "Marquee is not affiliated with Nintendo, HarbourMasters, " +
                 "Premiumize, or any port author. The ports listed are the work " +
                 "of their own authors — see each project's repository. Only use " +
                 "game files you legally own and dumped yourself. Premiumize " +

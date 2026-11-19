@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <!-- Dark yard tone sampled from the Portside icon artwork (the
-         container-yard ground, darkened) — the adaptive icon's
-         background ring around the scaled photo. -->
-    <color name="portside_icon_background">#FF3B3734</color>
-</resources>
