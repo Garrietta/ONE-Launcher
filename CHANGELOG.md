@@ -1,5 +1,84 @@
 # Changelog
 
+## v1.9.4 — 2026-11-22
+
+**Every box at its real size.** Games on the shelf now stand at the
+height of their real retail box, relative to each other, and open at
+the box's real shape: a 3DS case is shorter than a PlayStation 2 case, a
+Switch case is as tall as a PS4 case but narrower, a PlayStation or
+Dreamcast jewel case is wider than it is tall, and Nintendo 64 and Super
+Nintendo boxes open landscape. The DOS and Amiga big boxes are the
+tallest. A spine is as tall as its box, so pulling a game out only
+widens it. The tallest box in the list stands at the shelf's full
+height and the rest keep their proportion to it. The sizes are the
+common North American boxes (`data/PlatformBox.kt`); anything without a
+box of its own, such as arcade games, gets a DVD case.
+
+## v1.9.3 — 2026-11-22
+
+**The shelf is a rolodex.** The open game is now the one at the far
+left of the shelf, and the shelf rolls under your thumb. The games click
+past that spot one at a time: between two games the motion gathers
+around the halfway point, so each game snaps into place rather than
+sliding, and a held thumb rests close to a game. Whatever lands at the
+far left is selected right away, pops open into its framed cover and
+gives a light tick, while the game it replaced folds back into a spine
+and flips away to the left. A fling rolls on and slows down to stop
+exactly on a game. Tapping a spine rolls the shelf to it, ticking
+through each game on the way. One function, `shelfShown`, turns the
+thumb's position into the detented one the shelf draws.
+
+## v1.9.2 — 2026-11-22
+
+**The shelf moves one game at a time.** Dragging or flinging the shelf
+now ticks through the games like a wheel with detents. Each game that
+reaches the slot is selected right away and pops open into its framed
+cover with a short, hard-landing step and a small lift, while the one
+before it folds back into a spine. A fast fling flows; as it slows down
+the last few games clack into place one by one. Every step gives a light
+haptic tick. Tapping a spine runs the shelf to it the same way, and
+swiping across the title still steps one game. The shelf is drawn from a
+single position (`ui/Shelf.kt`) whose geometry is a pure function,
+tested in `ShelfGeometryTest`. The open cover also loads over its spine
+image now, instead of flashing empty.
+
+**The Library is one page.** It no longer scrolls up and down: the shelf
+takes whatever height is left once the title, buttons and collections
+are placed. When the window is short, the catalog line goes first, then
+the title's second line, then the collections, and on a landscape phone
+the buttons move beside the title. The title keeps a fixed slot, so the
+shelf never changes height from one game to the next.
+
+Not device-tested: the step timing, the pop and the haptic tick need a
+feel on the Fold, folded and unfolded.
+
+## v1.9.1 — 2026-11-22
+
+A design pass after the unslop rules (quiet chrome, color spent on one
+moment per screen) and film-grain gradients.
+
+**The backdrop is the moment.** The platform's color now falls as light
+from above the shelf and deepens toward the floor, with a fine film
+grain over the whole screen, as on a cinema screen. The two white
+"swoosh" sweeps and the white corner glow are gone; the faint blurred
+wash of the cover art stays. `ui/theme/Grain.kt` holds the grain: tiled
+luminance noise laid on in Overlay, so it never shifts the platform's
+hue.
+
+**Calmer type.** Titles are Archivo SemiBold instead of Black and
+ExtraBold: a title reads by its size and Archivo's wide shape, and the
+screen keeps one loud thing, the platform's light. The wordmark keeps
+its Black. In the console rail and tabs the selected platform is
+SemiBold and the rest Medium, with the color and the bar marking the
+selection as before.
+
+**Screenshots on the JVM.** `MarqueeScreenshotTest` (Robolectric and
+Roborazzi, test dependencies only) draws the backdrop and type for N64,
+Switch and PS2: `./gradlew :app:recordRoborazziDebug`.
+
+Not device-tested: the grain and the light need a look on the Fold,
+folded and unfolded.
+
 ## v1.9.0 — 2026-11-19
 
 **Portside is now Marquee.** New name, new icon, new look.

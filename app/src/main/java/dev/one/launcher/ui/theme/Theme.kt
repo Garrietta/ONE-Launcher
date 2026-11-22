@@ -21,8 +21,8 @@ import com.garrietta.one.R
  * [dev.one.launcher.data.PlatformTint]); on top of that the UI is
  * only white and greys. The primary action is a solid off-white
  * pill with dark text; secondary actions are translucent dark pills.
- * Type is Archivo (OFL, bundled): ExtraBold/Black for titles, the
- * wordmark and big numbers; Regular/Medium for everything else.
+ * Type is Archivo (OFL, bundled): SemiBold for titles and big numbers,
+ * Black for the wordmark alone; Regular/Medium for everything else.
  * No dynamic color, no light theme — a wallpaper palette would fight
  * the platform tint and the cover art.
  */
@@ -82,14 +82,20 @@ private fun style(size: Int, weight: FontWeight, line: Int, tracking: Double = 0
         letterSpacing = tracking.sp
     )
 
+/*
+ * Titles are SemiBold, not Black: a title reads by its size and by
+ * Archivo's wide shape, so the screen keeps one loud thing - the
+ * platform's light - and the type sits on it calmly. The wordmark keeps
+ * its Black; it is the logo.
+ */
 private val MarqueeTypography = Typography(
-    displayLarge = style(52, FontWeight.Black, 56, -1.0),
-    displayMedium = style(42, FontWeight.Black, 46, -0.8),
-    displaySmall = style(34, FontWeight.ExtraBold, 38, -0.6),
-    headlineLarge = style(30, FontWeight.ExtraBold, 34, -0.4),
-    headlineMedium = style(26, FontWeight.ExtraBold, 30, -0.3),
-    headlineSmall = style(22, FontWeight.ExtraBold, 26, -0.2),
-    titleLarge = style(20, FontWeight.ExtraBold, 24, -0.1),
+    displayLarge = style(52, FontWeight.SemiBold, 56, -1.0),
+    displayMedium = style(42, FontWeight.SemiBold, 46, -0.8),
+    displaySmall = style(34, FontWeight.SemiBold, 38, -0.6),
+    headlineLarge = style(30, FontWeight.SemiBold, 34, -0.4),
+    headlineMedium = style(26, FontWeight.SemiBold, 30, -0.3),
+    headlineSmall = style(22, FontWeight.SemiBold, 26, -0.2),
+    titleLarge = style(20, FontWeight.SemiBold, 24, -0.1),
     titleMedium = style(16, FontWeight.SemiBold, 22),
     titleSmall = style(14, FontWeight.SemiBold, 20),
     bodyLarge = style(16, FontWeight.Normal, 22),
