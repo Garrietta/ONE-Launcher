@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.9.3 — 2026-11-22
+
+**The shelf is a rolodex.** The open game is now the one at the far
+left of the shelf, and the shelf rolls under your thumb. The games click
+past that spot one at a time: between two games the motion gathers
+around the halfway point, so each game snaps into place rather than
+sliding, and a held thumb rests close to a game. Whatever lands at the
+far left is selected right away, pops open into its framed cover and
+gives a light tick, while the game it replaced folds back into a spine
+and flips away to the left. A fling rolls on and slows down to stop
+exactly on a game. Tapping a spine rolls the shelf to it, ticking
+through each game on the way. One function, `shelfShown`, turns the
+thumb's position into the detented one the shelf draws.
+
 ## v1.9.2 — 2026-11-22
 
 **The shelf moves one game at a time.** Dragging or flinging the shelf

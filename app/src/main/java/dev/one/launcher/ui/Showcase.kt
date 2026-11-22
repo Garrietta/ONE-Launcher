@@ -71,12 +71,10 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -108,9 +106,9 @@ import kotlin.math.abs
  *    Play/Open pill and a translucent Details pill;
  *  - small collections ("Ready to play", "Has files") sit at the bottom.
  *
- * Touch, not buttons: drag the shelf to step through it one game at a
- * time (Shelf.kt), tap a spine to pull it forward, tap the cover to open
- * the game, or swipe left/right across the title to step. The page fits
+ * Touch, not buttons: roll the shelf like a rolodex, the far-left game
+ * open (Shelf.kt), tap a spine to roll to it, tap the cover to open the
+ * game, or swipe left/right across the title to roll one game. The page fits
  * the window without scrolling (libraryFit). There are no button hints and no bottom navigation bar — Cloud
  * and Settings live as icons in the top bar. Wide windows (tablets,
  * unfolded foldables, phones in landscape) get a console rail on the
@@ -535,20 +533,8 @@ private fun ShowcaseBody(
     modifier: Modifier = Modifier
 ) {
     val shelf = remember { ShelfState() }
-    val density = LocalDensity.current
-    val haptic = LocalHapticFeedback.current
     val selectedIndex = games.indexOfFirst { it.key == selectedGame?.key }
-
-    // Every move of the shelf selects the game it lands on, with a tick.
-    fun stepTo(index: Int) {
-        if (games.isEmpty()) return
-        val next = index.coerceIn(0, games.lastIndex)
-        if (next == shelf.target) return
-        shelf.moveTo(next)
-        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-        onSelectGame(games[next].key)
-    }
-
+    val density = LocalDensity.current
     val readyGames = remember(allGames, statuses, selectedPlatform) {
         allGames.filter { g ->
             (selectedPlatform.isEmpty() || g.platform == selectedPlatform) &&
@@ -630,7 +616,7 @@ private fun ShowcaseBody(
                     games = games,
                     selectedIndex = selectedIndex,
                     state = shelf,
-                    onStep = ::stepTo,
+                    onSelect = { onSelectGame(games[it].key) },
                     onOpen = { onOpenGame(games[it].key) },
                     modifier = Modifier.fillMaxWidth().weight(1f)
                 )
@@ -676,7 +662,7 @@ private fun ShowcaseBody(
                             detectHorizontalDragGestures(
                                 onDragStart = { drag = 0f },
                                 onDragEnd = {
-                                    if (abs(drag) > threshold) stepTo(shelf.target + if (drag < 0) 1 else -1)
+                                    if (abs(drag) > threshold) shelf.rollTo(shelf.selected + if (drag < 0) 1 else -1)
                                     drag = 0f
                                 },
                                 onDragCancel = { drag = 0f }

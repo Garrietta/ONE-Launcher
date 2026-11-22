@@ -3,8 +3,9 @@ package dev.one.launcher.ui
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationState
 import androidx.compose.animation.core.animateDecay
-import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.exponentialDecay
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -25,6 +26,8 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -44,11 +47,13 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -62,28 +67,32 @@ import dev.one.launcher.data.GameEntry
 import dev.one.launcher.data.PlatformTint
 import dev.one.launcher.ui.theme.MarqueeInk
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 /*
- * The shelf (v1.9.2). Games stand as spines and the one in the slot is
- * pulled out as its full cover in a white frame. The shelf moves one game
- * at a time, like a wheel with detents: a drag or a fling ticks through
- * the games, every game that reaches the slot is selected at once and
- * opens with a short hard-landing step and a small pop, and the one it
- * replaced folds back into a spine. Nothing slides past unselected, and
- * each step gives a light haptic tick.
+ * The shelf (v1.9.3), a rolodex. Games stand as spines and the one in the
+ * slot, at the far left, is pulled out as its full cover in a white frame.
+ * The shelf rolls under the thumb, and the games click past the slot one
+ * at a time: between two games the motion bunches up around the halfway
+ * point, so each game snaps into the slot rather than sliding, and a held
+ * thumb rests close to a game. Whatever lands in the slot is selected at
+ * once, opens with a small pop and gives a light haptic tick; the game it
+ * replaced folds back into a spine and flips away to the left. A fling
+ * rolls on and slows down to stop exactly on a game.
  *
  * Everything on the shelf is placed from one number, the shown position:
  * 3.0 means game 3 is open in the slot, 3.4 means game 3 is folding shut
- * while game 4 opens. The geometry is pure (shelfOpenness, shelfWidth,
- * shelfLefts) and tested in ShelfGeometryTest.
+ * while game 4 opens. The thumb and flings move a raw position, and
+ * shelfShown turns it into the shown one with a detent at every game. The
+ * geometry is pure (shelfShown, shelfOpenness, shelfWidth, shelfLefts,
+ * shelfVisibility) and tested in ShelfGeometryTest.
  */
 
 /** Spine width on the shelf. */
@@ -93,29 +102,23 @@ private val SpineGap = 3.dp
 private val ShelfPadStart = 20.dp
 private val FrameWidth = 3.dp
 
-/** Spines kept to the left of the open cover once the shelf has moved past the start. */
-internal const val ShelfLead = 3
+/** Spines kept to the left of the open cover: none, the open game is the far left one. */
+internal const val ShelfLead = 0
 
-/** Finger travel that moves the shelf one game. */
-private val StepDrag = 40.dp
+/** How sharply the motion between two games bunches up at the halfway point; 1 would be even. */
+private const val DetentSharpness = 3f
 
-/** One step: most of the travel early, then a hard stop. */
+/** A tap or a swipe across the title rolls the shelf this long per game, never longer than the cap. */
 private const val StepMillis = 160
-private val StepEasing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
-
-/** A tapped spine a few games away takes a little longer, never more than this. */
-private const val LongestStepMillis = 420
+private const val LongestStepMillis = 520
 
 /** The arriving cover jumps up a little larger and settles. */
 private const val PopMillis = 280
 private const val PopScale = 0.045f
 private val PopLift = 6.dp
 
-/** A selection made elsewhere further than this jumps instead of running the shelf through every game between. */
-private const val FarJump = 8
-
-/** A fling ends once it is slower than this many games a second. */
-private const val FlingStopSpeed = 0.5f
+/** A fling hands over to the last settle below this many games a second. */
+private const val FlingStopSpeed = 0.1f
 
 // ---- Geometry ----
 
@@ -130,8 +133,26 @@ internal data class ShelfMetrics(
     val pitch: Float get() = spine + gap
 }
 
+/**
+ * The shown position for a [raw] one: whole games stay whole, and between
+ * two the motion is gathered around the halfway point, so the shelf seems
+ * to click from game to game while still following the thumb.
+ */
+internal fun shelfShown(raw: Float): Float {
+    val whole = floor(raw)
+    val f = raw - whole
+    if (f <= 0f) return raw
+    val a = f.pow(DetentSharpness)
+    val b = (1f - f).pow(DetentSharpness)
+    return whole + a / (a + b)
+}
+
 /** How far game [index] is pulled out when the shelf shows [shown]: 1 in the slot, 0 a step or more away. */
 internal fun shelfOpenness(index: Int, shown: Float): Float = (1f - abs(index - shown)).coerceIn(0f, 1f)
+
+/** How visible game [index] is: games that have left the slot flip away to the left and fade. */
+internal fun shelfVisibility(index: Int, shown: Float, lead: Int = ShelfLead): Float =
+    (1f - (shown - lead - index)).coerceIn(0f, 1f)
 
 /** Width of game [index]'s slot: a spine growing into the cover as it is pulled out. */
 internal fun shelfWidth(index: Int, shown: Float, m: ShelfMetrics): Float =
@@ -178,130 +199,175 @@ internal fun shelfLefts(first: Int, last: Int, shown: Float, m: ShelfMetrics): F
 internal fun spineHeightRatio(game: GameEntry): Float =
     0.80f + ((game.key.hashCode() and 0x7) / 7f) * 0.12f
 
-/** How long a step from [distance] games away takes. */
+/** How long rolling [distance] games for a tap or a swipe across the title takes. */
 internal fun stepMillis(distance: Float): Int =
     (StepMillis + 60f * (distance - 1f)).coerceIn(StepMillis.toFloat(), LongestStepMillis.toFloat()).roundToInt()
 
-// ---- State ----
+/**
+ * Where a fling from [raw] at [velocity] games a second stops: the game the
+ * fling would naturally coast to, within the shelf. The friction is then
+ * chosen so the fling coasts to exactly there ([flingFriction]).
+ */
+internal fun flingEnd(raw: Float, velocity: Float, last: Int): Int =
+    (raw + velocity / DECAY_RATE).roundToInt().coerceIn(0, last)
 
-/** Where the shelf is going; [jump] lands there without running through the games between. */
-internal data class ShelfMove(val index: Int, val jump: Boolean, val serial: Int)
+/** The friction multiplier that makes an exponential decay from [raw] at [velocity] coast to [end]. */
+internal fun flingFriction(raw: Float, velocity: Float, end: Int): Float {
+    val distance = end - raw
+    if (distance == 0f || distance * velocity <= 0f) return 1f
+    return (velocity / (DECAY_RATE * distance)).coerceAtLeast(0.05f)
+}
+
+/** Compose's exponential decay loses velocity at this rate times its friction multiplier. */
+private const val DECAY_RATE = 4.2f
+
+// ---- State ----
 
 @Stable
 internal class ShelfState {
-    /** The position drawn: whole numbers are a game open in the slot. */
-    val shown = Animatable(0f)
+    /** Where the thumb or a fling has rolled the shelf, in games; see [shelfShown]. */
+    var raw by mutableFloatStateOf(0f)
 
-    /** 1 the moment a game arrives in the slot, settling to 0. */
+    /** The game in the slot: the raw position rounded. */
+    var selected by mutableIntStateOf(0)
+
+    /** 1 the moment a game lands in the slot, settling to 0. */
     val pop = Animatable(0f)
 
-    var move by mutableStateOf(ShelfMove(0, jump = true, serial = 0))
+    /** True while the thumb, a fling or a roll is moving the shelf, so a selection made elsewhere waits. */
+    var moving by mutableStateOf(false)
+
+    /** A roll asked for from outside the shelf, as a swipe across the title does. */
+    var rollRequest by mutableStateOf(ShelfRoll(0, 0))
         private set
 
-    /** The game the shelf is on, or heading to. */
-    val target: Int get() = move.index
-
-    /** True while a finger or a fling is moving the shelf, so selections arriving from outside wait. */
-    var steering by mutableStateOf(false)
-
-    fun moveTo(index: Int, jump: Boolean = false) {
-        if (!jump && index == move.index) return
-        move = ShelfMove(index, jump, move.serial + 1)
+    fun rollTo(index: Int) {
+        rollRequest = ShelfRoll(index, rollRequest.serial + 1)
     }
 }
 
-/** The drag in progress: where it started, how many games it has moved, and its fling. */
-private class ShelfDrag {
-    var from = 0
-    var steps = 0f
+internal data class ShelfRoll(val index: Int, val serial: Int)
+
+/** The motion in progress, so a new one can stop it, and the list last shown. */
+private class ShelfMotion {
+    var job: Job? = null
     var serial = 0
-    var fling: Job? = null
     var list: List<GameEntry>? = null
+    var pop: Job? = null
 }
 
 // ---- The shelf ----
 
 /**
- * The shelf of [games]. [onStep] is called with the game a drag, fling or
- * tap moves the shelf to (the caller selects it and calls
- * [ShelfState.moveTo]); [onOpen] when the open cover is tapped. A change of
- * [selectedIndex] from outside moves the shelf to it.
+ * The shelf of [games]. [onSelect] is called with each game that lands in
+ * the slot as the shelf rolls; [onOpen] when the open cover is tapped. A
+ * change of [selectedIndex] from outside puts that game in the slot.
  */
 @Composable
 internal fun GameShelf(
     games: List<GameEntry>,
     selectedIndex: Int,
     state: ShelfState,
-    onStep: (Int) -> Unit,
+    onSelect: (Int) -> Unit,
     onOpen: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
+    val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
-    val drag = remember { ShelfDrag() }
+    val motion = remember { ShelfMotion() }
     val currentGames by rememberUpdatedState(games)
-    val currentOnStep by rememberUpdatedState(onStep)
-    val stepPx = with(density) { StepDrag.toPx() }
+    val currentOnSelect by rememberUpdatedState(onSelect)
+    // One game per spine of thumb travel, so the spines keep up with the thumb.
+    val stepPx = with(density) { (SpineWidth + SpineGap).toPx() }
 
-    // Follow a selection made elsewhere: a collection, a search, a new filter.
-    LaunchedEffect(games, selectedIndex, state.steering) {
-        if (state.steering || games.isEmpty()) return@LaunchedEffect
-        val index = selectedIndex.coerceIn(0, games.lastIndex)
-        val newList = drag.list !== games
-        drag.list = games
-        if (newList || abs(index - state.target) > FarJump) state.moveTo(index, jump = true)
-        else state.moveTo(index)
-    }
+    fun last() = currentGames.lastIndex.coerceAtLeast(0)
 
-    // Run the shelf to each new target in one hard-landing step, and pop
-    // the cover that arrives. collectLatest drops a step still running
-    // when the next one comes, so a fast fling flows and a slow one clacks.
-    LaunchedEffect(state) {
-        snapshotFlow { state.move }.collectLatest { move ->
-            coroutineScope {
-                launch {
-                    state.pop.snapTo(1f)
-                    state.pop.animateTo(0f, tween(PopMillis, easing = FastOutSlowInEasing))
-                }
-                val to = move.index.toFloat()
-                if (move.jump) {
-                    state.shown.snapTo(to)
-                } else {
-                    val distance = abs(to - state.shown.value)
-                    if (distance > 0.001f) state.shown.animateTo(to, tween(stepMillis(distance), easing = StepEasing))
-                }
+    // Every position change goes through here: whatever lands in the slot
+    // is selected, ticks and pops.
+    fun rollRaw(value: Float, announce: Boolean = true) {
+        val raw = value.coerceIn(0f, last().toFloat())
+        state.raw = raw
+        val landed = raw.roundToInt()
+        if (landed != state.selected) {
+            state.selected = landed
+            motion.pop?.cancel()
+            motion.pop = scope.launch {
+                state.pop.snapTo(1f)
+                state.pop.animateTo(0f, tween(PopMillis, easing = FastOutSlowInEasing))
+            }
+            if (announce) {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                currentOnSelect(landed)
             }
         }
     }
 
+    // Starts a motion, stopping the one before it; moving stays true until
+    // the last one started has finished.
+    fun move(block: suspend () -> Unit) {
+        motion.job?.cancel()
+        val serial = ++motion.serial
+        state.moving = true
+        motion.job = scope.launch {
+            try {
+                block()
+            } finally {
+                if (motion.serial == serial) state.moving = false
+            }
+        }
+    }
+
+    suspend fun settle(to: Int, millis: Int) {
+        val from = state.raw
+        if (from == to.toFloat()) return
+        animate(from, to.toFloat(), animationSpec = tween(millis, easing = LinearEasing)) { value, _ -> rollRaw(value) }
+    }
+
+    fun rollTo(index: Int) {
+        val to = index.coerceIn(0, last())
+        move { settle(to, stepMillis(abs(to - state.raw))) }
+    }
+
+    // Follow a selection made elsewhere (a collection, a search, a new
+    // filter) by putting it in the slot at once.
+    LaunchedEffect(games, selectedIndex, state.moving) {
+        if (state.moving || games.isEmpty()) return@LaunchedEffect
+        val index = selectedIndex.coerceIn(0, games.lastIndex)
+        val newList = motion.list !== games
+        motion.list = games
+        if (newList || index != state.selected || state.raw != index.toFloat()) {
+            rollRaw(index.toFloat(), announce = false)
+            state.raw = index.toFloat()
+        }
+    }
+
+    // Rolls asked for from outside, as a swipe across the title does.
+    LaunchedEffect(state) {
+        snapshotFlow { state.rollRequest }.drop(1).collect { rollTo(it.index) }
+    }
+
     val draggable = Modifier.draggable(
-        state = rememberDraggableState { delta ->
-            drag.steps -= delta / stepPx
-            currentOnStep(drag.from + drag.steps.roundToInt())
-        },
+        state = rememberDraggableState { delta -> rollRaw(state.raw - delta / stepPx) },
         orientation = Orientation.Horizontal,
         onDragStarted = {
-            drag.fling?.cancel()
-            drag.serial++
-            state.steering = true
-            drag.from = state.target
-            drag.steps = 0f
+            motion.job?.cancel()
+            motion.serial++
+            state.moving = true
         },
         onDragStopped = { velocity ->
-            val serial = drag.serial
-            drag.fling = scope.launch {
-                try {
-                    val lastIndex = currentGames.lastIndex
-                    AnimationState(initialValue = drag.steps, initialVelocity = -velocity / stepPx).animateDecay(
-                        exponentialDecay(absVelocityThreshold = FlingStopSpeed)
+            val speed = -velocity / stepPx
+            move {
+                val end = flingEnd(state.raw, speed, last())
+                if (abs(speed) > FlingStopSpeed && end != state.raw.roundToInt()) {
+                    AnimationState(initialValue = state.raw, initialVelocity = speed).animateDecay(
+                        exponentialDecay(flingFriction(state.raw, speed, end), FlingStopSpeed)
                     ) {
-                        val index = drag.from + value.roundToInt()
-                        currentOnStep(index)
-                        if ((index <= 0 && velocity > 0f) || (index >= lastIndex && velocity < 0f)) cancelAnimation()
+                        rollRaw(value)
+                        if ((speed > 0f && value >= end) || (speed < 0f && value <= end)) cancelAnimation()
                     }
-                } finally {
-                    if (drag.serial == serial) state.steering = false
                 }
+                settle(end, StepMillis / 2)
             }
         }
     )
@@ -324,7 +390,7 @@ internal fun GameShelf(
 
         // Compose only the games near the slot; the range follows the
         // rounded position, so it changes once per step, not per frame.
-        val near by remember { derivedStateOf { state.shown.value.roundToInt() } }
+        val near by remember { derivedStateOf { state.raw.roundToInt() } }
         val toRight = ceil((widthPx - metrics.padStart - metrics.lead * metrics.pitch - metrics.cover) / metrics.pitch).toInt()
         val first = (near - metrics.lead - 2).coerceAtLeast(0)
         val last = (near + toRight.coerceAtLeast(0) + 2).coerceAtMost(games.lastIndex)
@@ -338,18 +404,19 @@ internal fun GameShelf(
                         ShelfSlot(
                             game = game,
                             index = k,
-                            selected = k == state.target,
-                            open = { shelfOpenness(k, state.shown.value) },
+                            selected = k == state.selected,
+                            open = { shelfOpenness(k, shelfShown(state.raw)) },
+                            visible = { shelfVisibility(k, shelfShown(state.raw)) },
                             pop = { state.pop.value },
                             coverWidth = coverWidth,
                             coverHeight = coverHeight,
-                            onClick = { if (k == state.target) onOpen(k) else onStep(k) }
+                            onClick = { if (k == state.selected) onOpen(k) else rollTo(k) }
                         )
                     }
                 }
             }
         ) { measurables, constraints ->
-            val shown = state.shown.value
+            val shown = shelfShown(state.raw)
             val lefts = shelfLefts(first, last, shown, metrics)
             val placeables = measurables.mapIndexed { j, measurable ->
                 val k = first + j
@@ -390,6 +457,7 @@ private fun ShelfSlot(
     index: Int,
     selected: Boolean,
     open: () -> Float,
+    visible: () -> Float,
     pop: () -> Float,
     coverWidth: Dp,
     coverHeight: Dp,
@@ -412,6 +480,7 @@ private fun ShelfSlot(
                 shape = RoundedCornerShape((3f + 3f * o).dp)
                 clip = true
                 shadowElevation = 18.dp.toPx() * o
+                alpha = visible()
             }
             .background(spineColor)
             .clickable(onClickLabel = if (selected) "Open ${game.title}" else "Select ${game.title}") { onClick() }

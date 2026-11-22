@@ -16,7 +16,9 @@ import androidx.compose.material3.Text
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.dp
 import com.github.takahirom.roborazzi.captureRoboImage
 import androidx.compose.runtime.getValue
@@ -114,7 +116,7 @@ class MarqueeScreenshotTest {
         )
     }
 
-    private fun library(name: String, start: Int, wide: Boolean = false, stepTo: Int? = null, frames: List<Long> = emptyList()) {
+    private fun library(name: String, start: Int, wide: Boolean = false, tap: String? = null, frames: List<Long> = emptyList()) {
         compose.mainClock.autoAdvance = false
         var selected by mutableStateOf(games[start].key)
         compose.setContent {
@@ -147,8 +149,9 @@ class MarqueeScreenshotTest {
         }
         compose.mainClock.advanceTimeBy(1_500)
         compose.onRoot().captureRoboImage("build/outputs/roborazzi/$name.png")
-        if (stepTo != null) {
-            selected = games[stepTo].key
+        if (tap != null) {
+            // Tap the next spine: the shelf rolls it into the slot.
+            compose.onNodeWithText(tap).performClick()
             var at = 0L
             for (t in frames) {
                 compose.mainClock.advanceTimeBy(t - at)
@@ -164,7 +167,7 @@ class MarqueeScreenshotTest {
 
     @Config(qualifiers = "w411dp-h600dp-xxhdpi")
     @Test fun library_phone_step() =
-        library("library_phone_step", start = 5, stepTo = 6, frames = listOf(16L, 48L, 96L, 160L, 400L))
+        library("library_phone_step", start = 5, tap = "A Dance of Fire and Ice", frames = listOf(32L, 80L, 96L, 112L, 400L))
 
     /** Landscape phone: the page drops what does not fit. */
     @Config(qualifiers = "w780dp-h330dp-xxhdpi")
