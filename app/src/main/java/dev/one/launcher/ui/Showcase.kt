@@ -1,5 +1,9 @@
 package dev.one.launcher.ui
 
+import dev.one.launcher.ui.theme.GRAIN_AMOUNT
+import dev.one.launcher.ui.theme.grainBrush
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
@@ -123,10 +127,12 @@ private const val CoverAspect = 0.70f
 // ---- Backdrop ----
 
 /**
- * Full-bleed platform-tinted backdrop: a vertical wash of the platform
- * color, a faint blurred wash of the cover art, two soft light sweeps,
- * and a dark floor so text at the bottom stays readable. The color
- * animates when the platform changes.
+ * Full-bleed platform-tinted backdrop, the screen's moment: the
+ * platform's color as light falling from above the shelf, deepening
+ * toward the floor, with a faint blurred wash of the cover art in it and
+ * film grain over all of it, as on a cinema screen. The floor darkens so
+ * text at the bottom stays readable. The color animates when the
+ * platform changes. Nothing else on the screen carries color.
  */
 @Composable
 fun PlatformBackdrop(
@@ -138,16 +144,25 @@ fun PlatformBackdrop(
     val tint by animateColorAsState(target, tween(650), label = "platformTint")
     val context = LocalContext.current
     Box(modifier = modifier.fillMaxSize()) {
+        // The light: the platform color, brightest where the shelf stands.
         Box(
             Modifier
                 .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        0f to lerp(tint, Color.White, 0.06f),
-                        0.55f to tint,
-                        1f to lerp(tint, Color.Black, 0.62f)
+                .drawWithCache {
+                    val w = size.width
+                    val h = size.height
+                    val light = Brush.radialGradient(
+                        0f to lerp(tint, MarqueeInk, 0.16f),
+                        0.45f to tint,
+                        1f to lerp(tint, Color.Black, 0.5f),
+                        center = Offset(w * 0.32f, h * 0.18f),
+                        radius = maxOf(w, h) * 0.95f
                     )
-                )
+                    onDrawBehind {
+                        drawRect(lerp(tint, Color.Black, 0.5f))
+                        drawRect(light)
+                    }
+                }
         )
         if (coverUrl.isNotBlank()) {
             AsyncImage(
@@ -166,27 +181,22 @@ fun PlatformBackdrop(
                     .alpha(0.14f)
             )
         }
-        // Two soft light sweeps — the "swoosh" behind the shelf.
-        Canvas(Modifier.fillMaxSize()) {
-            val w = size.width
-            val h = size.height
-            fun sweep(y0: Float, y1: Float, c1: Float, c2: Float, alpha: Float, width: Float) {
-                val p = Path().apply {
-                    moveTo(-0.05f * w, y0 * h)
-                    cubicTo(0.3f * w, c1 * h, 0.65f * w, c2 * h, 1.05f * w, y1 * h)
+        // The floor, then the grain over everything.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .drawWithCache {
+                    val floor = Brush.verticalGradient(
+                        0.5f to Color.Transparent,
+                        1f to Color.Black.copy(alpha = 0.55f)
+                    )
+                    val grain = grainBrush()
+                    onDrawBehind {
+                        drawRect(floor)
+                        drawRect(grain, alpha = GRAIN_AMOUNT, blendMode = BlendMode.Overlay)
+                    }
                 }
-                drawPath(p, Color.White.copy(alpha = alpha), style = Stroke(width = width))
-            }
-            sweep(0.62f, 0.50f, 0.48f, 0.70f, 0.045f, 90f)
-            sweep(0.70f, 0.58f, 0.60f, 0.76f, 0.035f, 2.5f)
-            drawRect(
-                Brush.radialGradient(
-                    listOf(Color.White.copy(alpha = 0.07f), Color.Transparent),
-                    center = Offset(w * 0.18f, h * 0.05f),
-                    radius = maxOf(w, h) * 0.6f
-                )
-            )
-        }
+        )
     }
 }
 
@@ -413,7 +423,7 @@ private fun RailItem(label: String, selected: Boolean, onClick: () -> Unit) {
         Text(
             text = label,
             style = MaterialTheme.typography.titleSmall.copy(
-                fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.SemiBold
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
             ),
             color = if (selected) MarqueeInk else MarqueeInk.copy(alpha = 0.5f),
             maxLines = 1,
@@ -453,7 +463,7 @@ private fun TabWord(label: String, selected: Boolean, onClick: () -> Unit) {
         Text(
             text = label,
             style = MaterialTheme.typography.titleSmall.copy(
-                fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.SemiBold
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
             ),
             color = if (selected) MarqueeInk else MarqueeInk.copy(alpha = 0.5f),
             maxLines = 1

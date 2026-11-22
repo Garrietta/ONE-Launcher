@@ -1,5 +1,32 @@
 # Changelog
 
+## v1.9.1 — 2026-11-22
+
+A design pass after the unslop rules (quiet chrome, color spent on one
+moment per screen) and film-grain gradients.
+
+**The backdrop is the moment.** The platform's color now falls as light
+from above the shelf and deepens toward the floor, with a fine film
+grain over the whole screen, as on a cinema screen. The two white
+"swoosh" sweeps and the white corner glow are gone; the faint blurred
+wash of the cover art stays. `ui/theme/Grain.kt` holds the grain: tiled
+luminance noise laid on in Overlay, so it never shifts the platform's
+hue.
+
+**Calmer type.** Titles are Archivo SemiBold instead of Black and
+ExtraBold: a title reads by its size and Archivo's wide shape, and the
+screen keeps one loud thing, the platform's light. The wordmark keeps
+its Black. In the console rail and tabs the selected platform is
+SemiBold and the rest Medium, with the color and the bar marking the
+selection as before.
+
+**Screenshots on the JVM.** `MarqueeScreenshotTest` (Robolectric and
+Roborazzi, test dependencies only) draws the backdrop and type for N64,
+Switch and PS2: `./gradlew :app:recordRoborazziDebug`.
+
+Not device-tested: the grain and the light need a look on the Fold,
+folded and unfolded.
+
 ## v1.9.0 — 2026-11-19
 
 **Portside is now Marquee.** New name, new icon, new look.
