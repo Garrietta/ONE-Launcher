@@ -6,7 +6,6 @@ import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -34,14 +33,10 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
@@ -57,7 +52,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -77,14 +71,16 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -112,17 +108,14 @@ import kotlin.math.abs
  *    Play/Open pill and a translucent Details pill;
  *  - small collections ("Ready to play", "Has files") sit at the bottom.
  *
- * Touch, not buttons: tap a spine to pull it forward, tap the cover to
- * open the game, swipe left/right across the title to step through the
- * shelf. There are no button hints and no bottom navigation bar — Cloud
+ * Touch, not buttons: drag the shelf to step through it one game at a
+ * time (Shelf.kt), tap a spine to pull it forward, tap the cover to open
+ * the game, or swipe left/right across the title to step. The page fits
+ * the window without scrolling (libraryFit). There are no button hints and no bottom navigation bar — Cloud
  * and Settings live as icons in the top bar. Wide windows (tablets,
  * unfolded foldables, phones in landscape) get a console rail on the
  * left like the video; narrow ones get a swipeable row of console tabs.
  */
-
-/** Spine width on the shelf. */
-private val SpineWidth = 30.dp
-private const val CoverAspect = 0.70f
 
 // ---- Backdrop ----
 
@@ -170,7 +163,7 @@ fun PlatformBackdrop(
                     .data(coverUrl)
                     .size(128)
                     .memoryCacheKey("$coverUrl#ambient")
-                    .placeholderMemoryCacheKey(coverUrl)
+                    .placeholderMemoryCacheKey(coverKey(coverUrl))
                     .crossfade(400)
                     .build(),
                 contentDescription = null,
@@ -478,6 +471,51 @@ private fun TabWord(label: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
+/**
+ * What the Library page has room for below the shelf. [inlineActions] puts
+ * the Play/Open pills beside the title instead of under it.
+ */
+internal data class LibraryFit(
+    val titleLines: Int,
+    val collections: Boolean,
+    val status: Boolean,
+    val inlineActions: Boolean = false
+)
+
+/** The shelf is never squeezed below this before something else gives way. */
+internal const val MIN_SHELF_DP = 190f
+
+/**
+ * Chooses what the Library page shows so it fits [height] with no
+ * scrolling and the shelf keeps at least [minShelf]: the catalog line goes
+ * first, then the title's second line, then the collections, and last the
+ * pills move up beside the title (a landscape phone). [fixed] is the
+ * section line and the hero without its title and pills; the others are
+ * the heights of the parts that can go or move, all in dp.
+ */
+internal fun libraryFit(
+    height: Float,
+    fixed: Float,
+    titleLine: Float,
+    collections: Float,
+    status: Float,
+    actions: Float,
+    hasCollections: Boolean,
+    minShelf: Float = MIN_SHELF_DP
+): LibraryFit {
+    val options = listOf(
+        LibraryFit(2, hasCollections, true),
+        LibraryFit(2, hasCollections, false),
+        LibraryFit(1, hasCollections, false),
+        LibraryFit(1, false, false),
+        LibraryFit(1, false, false, inlineActions = true)
+    )
+    fun shelf(fit: LibraryFit) = height - fixed - titleLine * fit.titleLines -
+        (if (fit.collections) collections else 0f) - (if (fit.status) status else 0f) -
+        (if (fit.inlineActions) 0f else actions)
+    return options.firstOrNull { shelf(it) >= minShelf } ?: options.last()
+}
+
 @Composable
 private fun ShowcaseBody(
     games: List<GameEntry>,
@@ -496,25 +534,18 @@ private fun ShowcaseBody(
     onPlay: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val shelfState = rememberLazyListState()
+    val shelf = remember { ShelfState() }
     val density = LocalDensity.current
+    val haptic = LocalHapticFeedback.current
     val selectedIndex = games.indexOfFirst { it.key == selectedGame?.key }
 
-    // Keep the selected cover in view with a few spines to its left,
-    // like a hand pulling one box off the shelf. Spines are all the
-    // same width, so "three items earlier" is a stable anchor.
-    LaunchedEffect(selectedGame?.key, games.size) {
-        if (selectedIndex >= 0) {
-            val target = (selectedIndex - 3).coerceAtLeast(0)
-            val visible = shelfState.layoutInfo.visibleItemsInfo.any { it.index == selectedIndex }
-            if (visible) shelfState.animateScrollToItem(target) else shelfState.scrollToItem(target)
-        }
-    }
-
-    fun step(delta: Int) {
+    // Every move of the shelf selects the game it lands on, with a tick.
+    fun stepTo(index: Int) {
         if (games.isEmpty()) return
-        val next = (if (selectedIndex < 0) 0 else selectedIndex + delta)
-            .coerceIn(0, games.lastIndex)
+        val next = index.coerceIn(0, games.lastIndex)
+        if (next == shelf.target) return
+        shelf.moveTo(next)
+        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         onSelectGame(games[next].key)
     }
 
@@ -531,19 +562,30 @@ private fun ShowcaseBody(
     }
 
     BoxWithConstraints(modifier) {
-        // The shelf takes ~40% of the height, within sensible bounds,
-        // so it fits a landscape phone and still fills a tablet.
-        val shelfHeight = (maxHeight * 0.42f).coerceIn(150.dp, 300.dp)
         val titleStyle = if (maxWidth > 700.dp) {
             MaterialTheme.typography.displayMedium
         } else {
             MaterialTheme.typography.displaySmall
         }
-        Column(
-            Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-        ) {
+        val typography = MaterialTheme.typography
+        val fit = with(density) {
+            val line = { style: TextStyle -> style.lineHeight.toDp().value }
+            libraryFit(
+                height = maxHeight.value,
+                // Section line (pill-high) + hero: gap, meta line, gap, pill, bottom margin.
+                fixed = (SECTION_PADDING + TOGGLE_HEIGHT) + (HERO_TOP + 6f + line(typography.bodyMedium)) + BOTTOM_MARGIN,
+                titleLine = line(titleStyle),
+                collections = COLLECTIONS_TOP + line(typography.labelLarge) + 8f + COLLECTION_TILE_HEIGHT,
+                status = 16f + line(typography.labelSmall),
+                actions = 12f + PILL_HEIGHT,
+                hasCollections = readyGames.isNotEmpty() || fileGames.isNotEmpty()
+            )
+        }
+        val titleSlot = with(density) { titleStyle.lineHeight.toDp() } * fit.titleLines
+
+        // One page, no scrolling: the shelf takes whatever height the
+        // rest leaves, and libraryFit has already dropped what does not fit.
+        Column(Modifier.fillMaxSize()) {
             // Section line: what this shelf is, and the "Has files" toggle.
             Row(
                 modifier = Modifier
@@ -573,7 +615,7 @@ private fun ShowcaseBody(
 
             if (games.isEmpty()) {
                 Box(
-                    Modifier.fillMaxWidth().height(shelfHeight),
+                    Modifier.fillMaxWidth().weight(1f),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
@@ -584,26 +626,14 @@ private fun ShowcaseBody(
                     )
                 }
             } else {
-                LazyRow(
-                    state = shelfState,
-                    modifier = Modifier.fillMaxWidth().height(shelfHeight),
-                    contentPadding = PaddingValues(horizontal = 20.dp),
-                    horizontalArrangement = Arrangement.spacedBy(3.dp),
-                    verticalAlignment = Alignment.Bottom
-                ) {
-                    itemsIndexed(games, key = { _, g -> g.key }) { index, game ->
-                        val isSelected = game.key == selectedGame?.key
-                        ShelfItem(
-                            game = game,
-                            index = index,
-                            selected = isSelected,
-                            height = shelfHeight,
-                            onClick = {
-                                if (isSelected) onOpenGame(game.key) else onSelectGame(game.key)
-                            }
-                        )
-                    }
-                }
+                GameShelf(
+                    games = games,
+                    selectedIndex = selectedIndex,
+                    state = shelf,
+                    onStep = ::stepTo,
+                    onOpen = { onOpenGame(games[it].key) },
+                    modifier = Modifier.fillMaxWidth().weight(1f)
+                )
             }
 
             if (selectedGame != null) {
@@ -618,44 +648,10 @@ private fun ShowcaseBody(
                 val source = posterSourceLabel(matchedFiles, matchedMagnets)
                 val portsText = if (selectedGame.ports.size == 1) "1 port" else "${selectedGame.ports.size} ports"
 
-                // Hero: swipe sideways here to step through the shelf.
+                // Hero: swipe sideways here to step through the shelf too.
                 var drag by remember { mutableStateOf(0f) }
                 val threshold = with(density) { 56.dp.toPx() }
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .pointerInput(selectedIndex, games.size) {
-                            detectHorizontalDragGestures(
-                                onDragStart = { drag = 0f },
-                                onDragEnd = {
-                                    if (abs(drag) > threshold) step(if (drag < 0) 1 else -1)
-                                    drag = 0f
-                                },
-                                onDragCancel = { drag = 0f }
-                            ) { change, amount ->
-                                change.consume()
-                                drag += amount
-                            }
-                        }
-                        .padding(start = 20.dp, end = 20.dp, top = 18.dp)
-                ) {
-                    Text(
-                        text = selectedGame.title,
-                        style = titleStyle,
-                        color = MarqueeInk,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = listOfNotNull(selectedGame.platform, portsText, status, source)
-                            .joinToString("  ·  "),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MarqueeInkMuted,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(Modifier.height(16.dp))
+                val actions: @Composable () -> Unit = {
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         if (installedPort != null) {
                             PrimaryPill(
@@ -673,11 +669,65 @@ private fun ShowcaseBody(
                         }
                     }
                 }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .pointerInput(games.size) {
+                            detectHorizontalDragGestures(
+                                onDragStart = { drag = 0f },
+                                onDragEnd = {
+                                    if (abs(drag) > threshold) stepTo(shelf.target + if (drag < 0) 1 else -1)
+                                    drag = 0f
+                                },
+                                onDragCancel = { drag = 0f }
+                            ) { change, amount ->
+                                change.consume()
+                                drag += amount
+                            }
+                        }
+                        .padding(start = 20.dp, end = 20.dp, top = HERO_TOP.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        // The title sits on the meta line; a one-line title
+                        // leaves its spare line above it, so the shelf never
+                        // changes height from one game to the next.
+                        Box(
+                            Modifier.fillMaxWidth().height(titleSlot),
+                            contentAlignment = Alignment.BottomStart
+                        ) {
+                            Text(
+                                text = selectedGame.title,
+                                style = titleStyle,
+                                color = MarqueeInk,
+                                maxLines = fit.titleLines,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = listOfNotNull(selectedGame.platform, portsText, status, source)
+                                .joinToString("  ·  "),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MarqueeInkMuted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (!fit.inlineActions) {
+                            Spacer(Modifier.height(12.dp))
+                            actions()
+                        }
+                    }
+                    if (fit.inlineActions) {
+                        Spacer(Modifier.width(16.dp))
+                        actions()
+                    }
+                }
             }
 
             // Collections, like the video's bottom row.
-            if (readyGames.isNotEmpty() || fileGames.isNotEmpty()) {
-                Spacer(Modifier.height(24.dp))
+            if (fit.collections) {
+                Spacer(Modifier.height(COLLECTIONS_TOP.dp))
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -694,117 +744,29 @@ private fun ShowcaseBody(
                 }
             }
 
-            Spacer(Modifier.height(20.dp))
-            Text(
-                text = catalogStatusText,
-                style = MaterialTheme.typography.labelSmall,
-                color = MarqueeInk.copy(alpha = 0.4f),
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
-            )
-            Spacer(Modifier.height(12.dp))
+            if (fit.status) {
+                Text(
+                    text = catalogStatusText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MarqueeInk.copy(alpha = 0.4f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp)
+                )
+            }
+            Spacer(Modifier.height(BOTTOM_MARGIN.dp))
         }
     }
 }
 
-/**
- * One slot on the shelf: a narrow spine, or — when selected — the full
- * cover in a white frame. The width animates between the two.
- */
-@Composable
-private fun ShelfItem(
-    game: GameEntry,
-    index: Int,
-    selected: Boolean,
-    height: Dp,
-    onClick: () -> Unit
-) {
-    val coverWidth = height * CoverAspect
-    val width by animateDpAsState(
-        if (selected) coverWidth else SpineWidth,
-        tween(280),
-        label = "shelfWidth"
-    )
-    // Spines vary a little in height, like real boxes on a shelf.
-    val spineHeight = height * (0.80f + ((game.key.hashCode() and 0x7) / 7f) * 0.12f)
-    val itemHeight by animateDpAsState(if (selected) height else spineHeight, tween(280), label = "shelfHeight")
-    val shape = RoundedCornerShape(if (selected) 6.dp else 3.dp)
-    val base = Color(PlatformTint.forPlatform(game.platform))
-    val spineColor = lerp(base, Color.Black, if (index % 3 == 0) 0.45f else if (index % 3 == 1) 0.2f else 0.05f)
-
-    Box(
-        modifier = Modifier
-            .width(width)
-            .height(itemHeight)
-            .then(if (selected) Modifier.shadow(18.dp, shape) else Modifier)
-            .clip(shape)
-            .background(spineColor)
-            .then(
-                if (selected) Modifier.border(BorderStroke(3.dp, MarqueeInk), shape) else Modifier
-            )
-            .clickable(onClickLabel = if (selected) "Open ${game.title}" else "Select ${game.title}") { onClick() }
-    ) {
-        if (game.coverArtUrl.isNotBlank()) {
-            AsyncImage(
-                model = ImageRequest.Builder(LocalContext.current)
-                    .data(game.coverArtUrl)
-                    .size(if (selected) 512 else 160)
-                    .placeholderMemoryCacheKey(game.coverArtUrl)
-                    .crossfade(200)
-                    .build(),
-                contentDescription = if (selected) game.title else null,
-                contentScale = ContentScale.Crop,
-                alignment = if (selected) Alignment.Center else Alignment.CenterStart,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .then(if (selected) Modifier.padding(3.dp).clip(RoundedCornerShape(4.dp)) else Modifier.alpha(0.55f))
-            )
-        }
-        if (!selected) {
-            // Darken the spine so its title reads.
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.horizontalGradient(
-                            listOf(Color.Black.copy(alpha = 0.55f), Color.Black.copy(alpha = 0.25f), Color.Black.copy(alpha = 0.6f))
-                        )
-                    )
-            )
-            Text(
-                text = game.title,
-                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold, fontSize = 10.sp),
-                color = MarqueeInk.copy(alpha = 0.92f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .verticalText()
-                    .rotate(90f)
-                    .padding(horizontal = 8.dp)
-            )
-        } else if (game.coverArtUrl.isBlank()) {
-            Text(
-                text = game.title,
-                style = MaterialTheme.typography.titleLarge,
-                color = MarqueeInk,
-                modifier = Modifier.align(Alignment.Center).padding(12.dp)
-            )
-        }
-    }
-}
-
-/** Lays a child out with swapped width/height so a 90° rotation fits a narrow slot. */
-private fun Modifier.verticalText(): Modifier = layout { measurable, constraints ->
-    val placeable = measurable.measure(
-        Constraints(maxWidth = constraints.maxHeight, maxHeight = constraints.maxWidth)
-    )
-    layout(placeable.height, placeable.width) {
-        placeable.place(
-            x = (placeable.height - placeable.width) / 2,
-            y = (placeable.width - placeable.height) / 2
-        )
-    }
-}
+// Heights of the Library page's fixed parts, in dp, for libraryFit.
+private const val SECTION_PADDING = 18f
+private const val TOGGLE_HEIGHT = 34f
+private const val HERO_TOP = 12f
+private const val PILL_HEIGHT = 48f
+private const val COLLECTIONS_TOP = 16f
+private const val COLLECTION_TILE_HEIGHT = 54f
+private const val BOTTOM_MARGIN = 12f
 
 @Composable
 private fun Collection(title: String, games: List<GameEntry>, onSelect: (String) -> Unit) {

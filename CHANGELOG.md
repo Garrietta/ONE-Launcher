@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.9.2 — 2026-11-22
+
+**The shelf moves one game at a time.** Dragging or flinging the shelf
+now ticks through the games like a wheel with detents. Each game that
+reaches the slot is selected right away and pops open into its framed
+cover with a short, hard-landing step and a small lift, while the one
+before it folds back into a spine. A fast fling flows; as it slows down
+the last few games clack into place one by one. Every step gives a light
+haptic tick. Tapping a spine runs the shelf to it the same way, and
+swiping across the title still steps one game. The shelf is drawn from a
+single position (`ui/Shelf.kt`) whose geometry is a pure function,
+tested in `ShelfGeometryTest`. The open cover also loads over its spine
+image now, instead of flashing empty.
+
+**The Library is one page.** It no longer scrolls up and down: the shelf
+takes whatever height is left once the title, buttons and collections
+are placed. When the window is short, the catalog line goes first, then
+the title's second line, then the collections, and on a landscape phone
+the buttons move beside the title. The title keeps a fixed slot, so the
+shelf never changes height from one game to the next.
+
+Not device-tested: the step timing, the pop and the haptic tick need a
+feel on the Fold, folded and unfolded.
+
 ## v1.9.1 — 2026-11-22
 
 A design pass after the unslop rules (quiet chrome, color spent on one
