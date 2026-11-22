@@ -63,7 +63,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import dev.one.launcher.data.BoxSize
 import dev.one.launcher.data.GameEntry
+import dev.one.launcher.data.PlatformBox
 import dev.one.launcher.data.PlatformTint
 import dev.one.launcher.ui.theme.MarqueeInk
 import kotlinx.coroutines.Job
@@ -87,6 +89,10 @@ import kotlin.math.roundToInt
  * replaced folds back into a spine and flips away to the left. A fling
  * rolls on and slows down to stop exactly on a game.
  *
+ * Every box stands at its real size relative to the others (PlatformBox):
+ * a 3DS case is shorter than a PlayStation case, and a Nintendo 64 box
+ * opens wider than it is tall. A spine is as tall as its box's front.
+ *
  * Everything on the shelf is placed from one number, the shown position:
  * 3.0 means game 3 is open in the slot, 3.4 means game 3 is folding shut
  * while game 4 opens. The thumb and flings move a raw position, and
@@ -97,7 +103,6 @@ import kotlin.math.roundToInt
 
 /** Spine width on the shelf. */
 internal val SpineWidth = 30.dp
-internal const val CoverAspect = 0.70f
 private val SpineGap = 3.dp
 private val ShelfPadStart = 20.dp
 private val FrameWidth = 3.dp
@@ -155,8 +160,8 @@ internal fun shelfVisibility(index: Int, shown: Float, lead: Int = ShelfLead): F
     (1f - (shown - lead - index)).coerceIn(0f, 1f)
 
 /** Width of game [index]'s slot: a spine growing into the cover as it is pulled out. */
-internal fun shelfWidth(index: Int, shown: Float, m: ShelfMetrics): Float =
-    m.spine + (m.cover - m.spine) * shelfOpenness(index, shown)
+internal fun shelfWidth(index: Int, shown: Float, m: ShelfMetrics, cover: Float = m.cover): Float =
+    m.spine + (cover - m.spine) * shelfOpenness(index, shown)
 
 /**
  * Left edges, in pixels from the shelf's left edge, of games [first]..[last]
@@ -169,7 +174,13 @@ internal fun shelfWidth(index: Int, shown: Float, m: ShelfMetrics): Float =
  * and the incoming one grows into the slot behind it, so every edge moves
  * continuously.
  */
-internal fun shelfLefts(first: Int, last: Int, shown: Float, m: ShelfMetrics): FloatArray {
+internal fun shelfLefts(
+    first: Int,
+    last: Int,
+    shown: Float,
+    m: ShelfMetrics,
+    coverOf: (Int) -> Float = { m.cover }
+): FloatArray {
     val out = FloatArray((last - first + 1).coerceAtLeast(0))
     if (out.isEmpty()) return out
     val s = shown.coerceAtLeast(0f)
@@ -181,7 +192,7 @@ internal fun shelfLefts(first: Int, last: Int, shown: Float, m: ShelfMetrics): F
     var x = anchorLeft
     if (k in first..last) out[k - first] = x
     while (k < last) {
-        x += shelfWidth(k, s, m) + m.gap
+        x += shelfWidth(k, s, m, coverOf(k)) + m.gap
         k++
         if (k >= first) out[k - first] = x
     }
@@ -189,15 +200,20 @@ internal fun shelfLefts(first: Int, last: Int, shown: Float, m: ShelfMetrics): F
     x = anchorLeft
     while (k > first) {
         k--
-        x -= shelfWidth(k, s, m) + m.gap
+        x -= shelfWidth(k, s, m, coverOf(k)) + m.gap
         if (k <= last) out[k - first] = x
     }
     return out
 }
 
-/** Spines vary a little in height, like real boxes on a shelf. */
-internal fun spineHeightRatio(game: GameEntry): Float =
-    0.80f + ((game.key.hashCode() and 0x7) / 7f) * 0.12f
+/**
+ * Pixels per millimetre of real box: as large as the shelf allows, with
+ * the tallest box in the list standing the full [heightPx] and the widest
+ * cover no wider than [coverCapPx]. One scale for every box, so they keep
+ * their real sizes relative to each other.
+ */
+internal fun shelfScale(heightPx: Float, coverCapPx: Float, tallestMm: Float, widestMm: Float): Float =
+    min(heightPx / tallestMm, coverCapPx / widestMm)
 
 /** How long rolling [distance] games for a tap or a swipe across the title takes. */
 internal fun stepMillis(distance: Float): Int =
@@ -247,6 +263,12 @@ internal class ShelfState {
 }
 
 internal data class ShelfRoll(val index: Int, val serial: Int)
+
+/** The real box of every game in the list, with the tallest and widest, which set the shelf's scale. */
+private class ShelfBoxes(val sizes: List<BoxSize>) {
+    val tallest: Float = sizes.maxOfOrNull { it.height } ?: PlatformBox.DVD.height
+    val widest: Float = sizes.maxOfOrNull { it.width } ?: PlatformBox.DVD.width
+}
 
 /** The motion in progress, so a new one can stop it, and the list last shown. */
 private class ShelfMotion {
@@ -329,6 +351,8 @@ internal fun GameShelf(
         move { settle(to, stepMillis(abs(to - state.raw))) }
     }
 
+    val boxes = remember(games) { ShelfBoxes(games.map { PlatformBox.forPlatform(it.platform) }) }
+
     // Follow a selection made elsewhere (a collection, a search, a new
     // filter) by putting it in the slot at once.
     LaunchedEffect(games, selectedIndex, state.moving) {
@@ -380,20 +404,27 @@ internal fun GameShelf(
                 clipRect(top = -size.height, bottom = size.height * 2f) { this@drawWithContent.drawContent() }
             }
     ) {
-        val coverWidth: Dp = min(maxHeight.value * CoverAspect, maxWidth.value * 0.5f).dp
-        val coverHeight: Dp = coverWidth / CoverAspect
-        val metrics = with(density) {
-            ShelfMetrics(SpineWidth.toPx(), coverWidth.toPx(), SpineGap.toPx(), ShelfPadStart.toPx())
-        }
-        val coverHeightPx = with(density) { coverHeight.toPx() }
+        // Every box at its real size relative to the others: a 3DS case
+        // shorter than a PS2 case, an N64 box wider than it is tall.
         val widthPx = constraints.maxWidth.toFloat()
+        val scale = shelfScale(
+            heightPx = constraints.maxHeight.toFloat(),
+            coverCapPx = widthPx * 0.5f,
+            tallestMm = boxes.tallest,
+            widestMm = boxes.widest
+        )
+        val coverOf = { k: Int -> boxes.sizes[k].width * scale }
+        val heightOf = { k: Int -> boxes.sizes[k].height * scale }
+        val metrics = with(density) {
+            ShelfMetrics(SpineWidth.toPx(), coverOf(state.selected.coerceIn(0, games.lastIndex)), SpineGap.toPx(), ShelfPadStart.toPx())
+        }
 
         // Compose only the games near the slot; the range follows the
         // rounded position, so it changes once per step, not per frame.
         val near by remember { derivedStateOf { state.raw.roundToInt() } }
         val toRight = ceil((widthPx - metrics.padStart - metrics.lead * metrics.pitch - metrics.cover) / metrics.pitch).toInt()
         val first = (near - metrics.lead - 2).coerceAtLeast(0)
-        val last = (near + toRight.coerceAtLeast(0) + 2).coerceAtMost(games.lastIndex)
+        val last = (near + toRight.coerceAtLeast(0) + 3).coerceAtMost(games.lastIndex)
 
         Layout(
             modifier = Modifier.fillMaxSize(),
@@ -408,8 +439,8 @@ internal fun GameShelf(
                             open = { shelfOpenness(k, shelfShown(state.raw)) },
                             visible = { shelfVisibility(k, shelfShown(state.raw)) },
                             pop = { state.pop.value },
-                            coverWidth = coverWidth,
-                            coverHeight = coverHeight,
+                            coverWidth = with(density) { coverOf(k).toDp() },
+                            coverHeight = with(density) { heightOf(k).toDp() },
                             onClick = { if (k == state.selected) onOpen(k) else rollTo(k) }
                         )
                     }
@@ -417,14 +448,15 @@ internal fun GameShelf(
             }
         ) { measurables, constraints ->
             val shown = shelfShown(state.raw)
-            val lefts = shelfLefts(first, last, shown, metrics)
+            val lefts = shelfLefts(first, last, shown, metrics, coverOf)
+            // A box's spine is as tall as its front: pulling it out only widens it.
             val placeables = measurables.mapIndexed { j, measurable ->
                 val k = first + j
-                val open = shelfOpenness(k, shown)
-                val spineHeight = coverHeightPx * spineHeightRatio(games[k])
-                val height = spineHeight + (coverHeightPx - spineHeight) * open
                 measurable.measure(
-                    Constraints.fixed(shelfWidth(k, shown, metrics).roundToInt(), height.roundToInt())
+                    Constraints.fixed(
+                        shelfWidth(k, shown, metrics, coverOf(k)).roundToInt(),
+                        heightOf(k).roundToInt().coerceAtLeast(1)
+                    )
                 )
             }
             layout(constraints.maxWidth, constraints.maxHeight) {

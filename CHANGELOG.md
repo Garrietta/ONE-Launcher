@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.9.4 — 2026-11-22
+
+**Every box at its real size.** Games on the shelf now stand at the
+height of their real retail box, relative to each other, and open at
+the box's real shape: a 3DS case is shorter than a PlayStation 2 case, a
+Switch case is as tall as a PS4 case but narrower, a PlayStation or
+Dreamcast jewel case is wider than it is tall, and Nintendo 64 and Super
+Nintendo boxes open landscape. The DOS and Amiga big boxes are the
+tallest. A spine is as tall as its box, so pulling a game out only
+widens it. The tallest box in the list stands at the shelf's full
+height and the rest keep their proportion to it. The sizes are the
+common North American boxes (`data/PlatformBox.kt`); anything without a
+box of its own, such as arcade games, gets a DVD case.
+
 ## v1.9.3 — 2026-11-22
 
 **The shelf is a rolodex.** The open game is now the one at the far
